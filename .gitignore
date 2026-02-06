@@ -71,6 +71,10 @@ ExportedObj/
 
 # Unity3D generated file on crash reports
 sysinfo.txt
+mono_crash*.json
+
+# Unity recovery / temp scenes
+Assets/_Recovery/
 
 # Builds
 *.apk
