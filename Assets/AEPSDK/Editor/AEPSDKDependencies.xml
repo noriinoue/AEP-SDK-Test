@@ -1,0 +1,9 @@
+<dependencies>
+  <iosPods>
+    <iosPod name="AEPCore" minTargetSdk="15.0" />
+    <iosPod name="AEPEdge" minTargetSdk="15.0" />
+    <iosPod name="AEPEdgeIdentity" minTargetSdk="15.0" />
+    <iosPod name="AEPAssurance" minTargetSdk="15.0" />
+    <iosPod name="AEPMessaging" minTargetSdk="15.0" />
+  </iosPods>
+</dependencies>
