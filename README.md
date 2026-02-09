@@ -1,6 +1,6 @@
 # AEP SDK Test
 
-Unity iOS アプリで Adobe Experience Platform (AEP) SDK および Adobe Journey Optimizer (AJO) のコンテンツカードを利用するサンプルプロジェクトです。
+Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。
 
 ---
 
@@ -14,13 +14,13 @@ Unity iOS アプリで Adobe Experience Platform (AEP) SDK および Adobe Journ
 
 ## プロジェクト概要
 
-- **プラットフォーム**: Unity → iOS ビルド（ネイティブブリッジ経由で AEP SDK を呼び出し）
-- **主な機能**
-  - AEP SDK の初期化（非同期、コールバックで完了通知）
-  - イベント送信（Edge）、Identity 更新（extendedPersonalId 等）
-  - **Content Cards**: 3 通りの表示（Text / Native / Scroll View）
-  - Proposition の手動更新（完了・失敗・タイムアウトを Unity に通知）
-  - Assurance の手動起動（デバッグ用、オプションで起動時自動起動）
+- **プラットフォーム**: Unity → iOS（ネイティブブリッジで AEP SDK を呼び出し）
+- **機能**
+  - AEP SDK 初期化（非同期、コールバックで完了通知）
+  - Edge イベント送信、Identity 更新（extendedPersonalId 等）
+  - **Content Cards**: 3 種の表示（Text / Native / Scroll View）
+  - Proposition 手動更新（完了・失敗・タイムアウトを Unity に通知）
+  - Assurance 手動起動（デバッグ用、オプションで起動時自動起動）
 
 ---
 
@@ -36,20 +36,16 @@ Unity iOS アプリで Adobe Experience Platform (AEP) SDK および Adobe Journ
 
 ### レイヤーと呼び出し関係
 
-Unity 画面の操作が C# → .mm → Swift と渡り、コールバックは Swift → .mm → C#（UnitySendMessage）で返る関係です。
+- **Unity → ネイティブ**: 画面操作 → C# → .mm → Swift → AEP SDK
+- **ネイティブ → Unity**: Swift コールバック / `sendToUnity` → .mm の `UnitySendMessage` → C# の `OnXxx(string)` で UI 更新
 
-#### なぜこの構成にする必要があるか
+#### 構成の理由
 
-- **C# からネイティブを呼ぶには C の関数が必須**  
-  Unity の iOS ビルドでは、ネイティブコード呼び出しは「**C ABI の関数を `DllImport("__Internal")` で呼ぶ**」形だけが公式にサポートされています。C# から Swift や Objective-C のメソッドを直接呼ぶことはできません。
+- **C# からネイティブ**: Unity iOS では **C ABI の関数を `DllImport("__Internal")` で呼ぶ**形式のみサポート。Swift/ObjC を直接呼べないため、C の入り口が必要。
+- **.mm を挟む**: `.mm` で `extern "C"` により C リンケージの関数を定義し、その中で Swift の `AEPSdkBridge` を呼ぶ。Swift は `@objc` と `UnityFramework-Swift.h` で ObjC から呼び出し可能。経路は C# → C 関数 → Swift。
+- **ネイティブ → Unity**: 戻りは **`UnitySendMessage(objectName, methodName, message)` のみ**。非同期結果は Swift のコールバック内、または .mm のブロック内で `UnitySendMessage` を呼んで C# に渡す。
 
-- **.mm（Objective-C++）を挟む理由**  
-  C の関数をどこかで定義する必要があります。Objective-C++ ファイル（.mm）で `extern "C"` により **C リンケージの関数**を定義し、その中で Swift の `AEPSdkBridge` を呼び出しています。Swift は `@objc` と自動生成ヘッダ（`UnityFramework-Swift.h`）で Objective-C から呼び出せる形になっており、.mm がそのヘッダを import して Swift を呼びます。結果として「C# → C 関数 → Swift」という経路になります。
-
-- **ネイティブから Unity に戻す方法**  
-  Unity が提供しているのは、ネイティブから C# に戻すための **C API の `UnitySendMessage(オブジェクト名, メソッド名, メッセージ文字列)` だけ**です。ネイティブ側（Swift または .mm）でこの C 関数を呼ぶと、Unity が指定した GameObject の指定メソッドを、引数 1 つ（string）で実行します。そのため、非同期の結果は「Swift でコールバックを受け取り、その中で `UnitySendMessage` を呼ぶ」か「.mm のブロック内で `UnitySendMessage` を呼ぶ」形で C# に返しています。
-
-まとめると、**Unity の iOS ブリッジ仕様（呼び出しは C 関数のみ・戻りは UnitySendMessage のみ）に合わせるために、C の入り口を持つ .mm と、そこで呼ばれる Swift の 2 段構成**にしています。
+→ **呼び出しは C 関数のみ・戻りは UnitySendMessage のみ**という iOS ブリッジ仕様のため、C の入り口を持つ .mm と Swift の 2 段構成にしている。
 
 ```mermaid
 flowchart LR
@@ -83,8 +79,7 @@ flowchart LR
     Callbacks --> UI
 ```
 
-- **呼び出し方向（Unity → ネイティブ）**: 画面操作 → C# の `_ios_aep_*` 呼び出し → .mm の C 関数 → Swift の `AEPSdkBridge` → AEP SDK。
-- **戻り方向（ネイティブ → Unity）**: Swift でコールバック or `sendToUnity` → .mm の `UnitySendMessage(gameObject, methodName, message)` → C# の `OnXxx(string)` が呼ばれ、UI を更新。
+詳細は上記フローチャートを参照。
 
 ### 初期化フロー
 
@@ -114,11 +109,11 @@ sequenceDiagram
     C->>U: SetContentCardButtonsInteractable(true)
 ```
 
-1. `AEPManager.Awake` で `InitializeSDKAsync` を開始。
-2. iOS 実機時: `_ios_aep_initialize` → `.mm` → `AEPSdkBridge.setupSDK(callback:)`。
-3. Swift で `MobileCore.initialize` 完了後、コールバックで `UnitySendMessage` により `OnSDKInitialized("success")` を呼ぶ。
-4. Unity で `isInitialized = true` とし、`pendingActions` を順次実行。設定で有効なら `StartAssuranceSessionAsync` を実行。
-5. Swift は初期化完了約 2 秒後に `prefetchContentCards()` で Surface `"square"` をプリフェッチし、成功時に `OnContentCardsPrefetched("success")` で Unity に通知。Unity は Content Cards 用ボタンを有効化。
+1. `AEPManager.Awake` → `InitializeSDKAsync`
+2. iOS: `_ios_aep_initialize` → .mm → `AEPSdkBridge.setupSDK(callback:)`
+3. Swift: `MobileCore.initialize` 完了 → コールバックで `UnitySendMessage` → `OnSDKInitialized("success")`
+4. Unity: `isInitialized = true`、`pendingActions` を実行。設定で有効なら `StartAssuranceSessionAsync`
+5. Swift: 初期化完了から約 2 秒後に `prefetchContentCards()`（Surface `"square"`）。成功時 `OnContentCardsPrefetched("success")` で Unity に通知 → Content Cards ボタン有効化
 
 ### ネイティブブリッジ一覧（C# ↔ C ↔ Swift）
 
@@ -134,26 +129,26 @@ sequenceDiagram
 
 ### Unity 側の主要状態
 
-- **シングルトン**: `AEPManager` は `DontDestroyOnLoad` で 1 インスタンスのみ。
-- **初期化待ち**: `ExecuteWhenInitialized(action)` で、未初期化時は `pendingActions` に積み、初期化完了後に実行。
-- **Content Cards ボタン**: `OnContentCardsPrefetched` と `OnPropositionsUpdated` 成功時に `SetContentCardButtonsInteractable(true)` で一括有効化。
+- **シングルトン**: `AEPManager` は `DontDestroyOnLoad` で 1 インスタンス
+- **初期化待ち**: `ExecuteWhenInitialized(action)` — 未初期化時は `pendingActions` に積み、完了後に実行
+- **Content Cards ボタン**: `OnContentCardsPrefetched` / `OnPropositionsUpdated` 成功時に `SetContentCardButtonsInteractable(true)` で有効化
 
 ### データ構造（Unity ↔ ネイティブ）
 
-- **ContentCardData** (C#): `templateType`, `title`, `body`, `imageUrl`, `actionUrl`, `buttonText`。ネイティブから受け取る JSON の 1 枚分に相当。
-- **ContentCardsResponse** (C#): `cards` (List<ContentCardData>), `error`。`getContentCardsForUnity` のコールバックで渡す JSON のデシリアライズ先。
+- **ContentCardData** (C#): `templateType`, `title`, `body`, `imageUrl`, `actionUrl`, `buttonText` — ネイティブ JSON の 1 枚分
+- **ContentCardsResponse** (C#): `cards` (List<ContentCardData>), `error` — `getContentCardsForUnity` コールバックのデシリアライズ先
 
 ---
 
 ## AJO Content Cards の実装
 
-この章だけでも、AJO Content Cards の概要と実装イメージが把握できるようにまとめています。
+AJO Content Cards の概要と実装の対応関係をまとめた章。
 
 ### 概要
 
-- **AJO (Adobe Journey Optimizer)** で配信する **Content Cards** を、Unity アプリ内で表示する実装です。
-- カードの「中身」（タイトル・本文・画像・CTA 等）は **AJO の施策**で決まり、Surface ごとに Proposition としてキャッシュされます。
-- 本プロジェクトでは **1 つの Surface 入力**（未入力時は `"square"`）に対し、**3 とおりの表示方法**を用意しています。
+- **AJO** で配信する **Content Cards** を Unity 内で表示する実装
+- カードの中身（タイトル・本文・画像・CTA 等）は AJO の施策で決定。Surface ごとに Proposition としてキャッシュ
+- 本プロジェクト: **Surface 1 つ**（未入力時 `"square"`）に対して **3 種の表示**（Text / Native / Scroll View）
 
 ### 用語の整理
 
@@ -193,15 +188,15 @@ flowchart LR
     CSharp --> UI
 ```
 
-- **Proposition キャッシュ**: 起動後の prefetch（surface: `"square"`）および手動更新で再取得。
-- **取得**: ネイティブで `Messaging.getPropositionsForSurfaces([surface])` または `Messaging.getContentCardsUI(for:surface, ...)` を使用。
-- **Unity へ渡す場合**: Proposition をパースして JSON にし、`getContentCardsForUnity` のコールバックで文字列を返す。`.mm` が `UnitySendMessage(gameObject, methodName, json)` で Unity に渡す。
-- **ネイティブで表示する場合**: `getContentCardsUI` で得た `ContentCardUI` の `view` を SwiftUI の ScrollView に並べ、ドロワー（sheet）で表示。
+- **Proposition キャッシュ**: 起動後の prefetch（surface: `"square"`）と手動更新で再取得
+- **取得**: ネイティブで `Messaging.getPropositionsForSurfaces([surface])` または `Messaging.getContentCardsUI(for:surface, ...)`
+- **Unity へ**: Proposition をパースして JSON にし、`getContentCardsForUnity` のコールバックで返す。.mm が `UnitySendMessage(gameObject, methodName, json)` で渡す
+- **ネイティブ表示**: `getContentCardsUI` の `ContentCardUI.view` を SwiftUI ScrollView に並べ、sheet で表示
 
 ### Surface の扱い
 
-- Unity: `surfaceInputField` で入力。空欄または未設定時は `GetSurfacePath()` が `"square"` を返す。
-- ネイティブ: 受け取った `surfacePath` で `Surface(path: surfacePath)` を生成し、すべての Content Cards API に渡す。
+- **Unity**: `surfaceInputField` で入力。空欄/未設定時は `GetSurfacePath()` → `"square"`
+- **ネイティブ**: 受け取った `surfacePath` で `Surface(path: surfacePath)` を生成し、Content Cards API に渡す
 
 ### 3 つの表示方法
 
@@ -230,9 +225,9 @@ flowchart TB
     M1 --> S1
     M2 --> S2
     
-    S1 -->|callback(json)| MM2[UnitySendMessage]
-    MM2 -->|OnContentCardsReceivedForText| C1[テキストエリアに JSON]
-    MM2 -->|OnContentCardsReceivedForScrollView| C2[Scroll View にプレハブ並べる]
+    S1 -->|"callback(json)"| UMSG[UnitySendMessage]
+    UMSG -->|OnContentCardsReceivedForText| C1[テキストエリアに JSON]
+    UMSG -->|OnContentCardsReceivedForScrollView| C2[Scroll View にプレハブ並べる]
     S2 --> C3[ネイティブ sheet でテンプレート表示]
 ```
 
@@ -266,27 +261,27 @@ sequenceDiagram
     C->>U: プレハブを Content に追加（タイトル・本文・画像・CTA・閉じる）
 ```
 
-1. ユーザーが「Scroll View」ボタンを押す。
-2. C#: `GetSurfacePath()` → `_ios_aep_getContentCardsForUnity(surfacePath, "AEPManager", "OnContentCardsReceivedForScrollView")`。
-3. Swift: `Messaging.getPropositionsForSurfaces([surface])` でキャッシュから取得。各 Proposition の `items` のうち `schema == .contentCard` を `ContentCardSchemaData` でパース。
-4. AJO のネスト構造（`title.content`, `body.content`, `image.url`, `buttons[0].actionUrl`, `buttons[0].text.content` 等）をフラット化し、`cards` 配列を JSON 化してコールバックで返す。
-5. .mm: コールバックで受け取った JSON を `UnitySendMessage("AEPManager", "OnContentCardsReceivedForScrollView", json)` で Unity に渡す。
-6. C#: `OnContentCardsReceivedForScrollView(json)` で `ContentCardsResponse` にデシリアライズ。`DisplayContentCardsInArea(response.cards)` で既存の子を破棄し、各 `ContentCardData` に対して `contentCardItemPrefab` をインスタンス化して `contentCardsContainer` に追加。タイトル・本文・画像・CTA・閉じるボタンをバインド。
+1. ユーザーが「Scroll View」ボタンを押す
+2. C#: `GetSurfacePath()` → `_ios_aep_getContentCardsForUnity(surfacePath, "AEPManager", "OnContentCardsReceivedForScrollView")`
+3. Swift: `Messaging.getPropositionsForSurfaces([surface])` でキャッシュ取得。`items` のうち `schema == .contentCard` を `ContentCardSchemaData` でパース
+4. AJO のネスト（`title.content`, `body.content`, `image.url`, `buttons[0].actionUrl` 等）をフラット化 → `cards` 配列を JSON 化してコールバックで返す
+5. .mm: コールバックで受け取った JSON を `UnitySendMessage(..., "OnContentCardsReceivedForScrollView", json)` で Unity に渡す
+6. C#: `OnContentCardsReceivedForScrollView(json)` で `ContentCardsResponse` にデシリアライズ。`DisplayContentCardsInArea(response.cards)` で既存の子を破棄し、各 `ContentCardData` で `contentCardItemPrefab` をインスタンス化して `contentCardsContainer` に追加（タイトル・本文・画像・CTA・閉じるをバインド）
 
 ### プレハブ仕様（Scroll View 用）
 
-- **親**: `contentCardsContainer` は **Scroll View の Content**（Canvas → Scroll View → Viewport → Content）を指定する。
-- **プレハブ**（`contentCardItemPrefab`）の推奨構成:
-  - 子に **RawImage**（画像）、**TMP_Text** を 2 つ（タイトル・本文）、**Button**（CTA）。
-  - 任意で名前が `"CloseButton"` または `"Close"` を含む **Button** を置くと、押下でそのカードの GameObject が Destroy される（Inspector の On Click 不要）。
-  - 枠: ルートに **Image**（枠用スプライト）または **Outline** で対応。
-- **レイアウト**: 各インスタンスに `LayoutElement`（preferredHeight 120, minHeight 80, flexibleWidth 1）。RawImage には preferredWidth/Height 80 を設定。プレハブのレイアウトがそのまま Scroll View 内に並ぶ。
+- **親**: `contentCardsContainer` = Scroll View の Content（Canvas → Scroll View → Viewport → Content）
+- **プレハブ** `contentCardItemPrefab` 推奨構成:
+  - 子: **RawImage**（画像）、**TMP_Text** x2（タイトル・本文）、**Button**（CTA）
+  - 任意: 名前が `"CloseButton"` または `"Close"` を含む **Button** → 押下でそのカードの GameObject を Destroy（Inspector の On Click 不要）
+  - 枠: ルートに **Image**（枠用スプライト）または **Outline**
+- **レイアウト**: 各インスタンスに `LayoutElement`（preferredHeight 120, minHeight 80, flexibleWidth 1）。RawImage は preferredWidth/Height 80。そのまま Scroll View 内に並ぶ
 
 ### ネイティブ側の実装ポイント（Swift）
 
-- **getContentCardsForUnity**: `ContentCardSchemaData` の `content` を `[String: Any]` として扱い、`title.content` / `body.content` / `image.url` / `buttons[0].actionUrl` と `buttons[0].text.content` を取得。表示トラッキングは `contentCardSchemaData.track(withEdgeEventType: .display)` で送信。
-- **showContentCardsSwiftUIWithTemplates**: `ContentCardsSwiftUIView` が `getContentCardsUI(for:customizer:listener:)` を呼び、`ContentCardCustomizerForBridge` で Large/Small/ImageOnly を統一スタイルに。`ContentCardListenerForBridge` で表示・閉じる・タップを処理し、閉じるで一覧から削除。
-- **Unity への通知**: `sendToUnity(objectName:method:message:)` で `OnContentCardsPrefetched` / `OnPropositionsUpdated` を呼び出し。手動更新はローディング表示 → タイムアウト 15 秒または完了でローディングを閉じ、`success:` / `failed:` / `timeout:` + surfacePath を送る。
+- **getContentCardsForUnity**: `ContentCardSchemaData.content` を `[String: Any]` で扱い、`title.content` / `body.content` / `image.url` / `buttons[0].actionUrl` 等を取得。表示トラッキングは `contentCardSchemaData.track(withEdgeEventType: .display)`
+- **showContentCardsSwiftUIWithTemplates**: `ContentCardsSwiftUIView` が `getContentCardsUI(for:customizer:listener:)` を呼ぶ。`ContentCardCustomizerForBridge` で Large/Small/ImageOnly を統一。`ContentCardListenerForBridge` で表示・閉じる・タップを処理
+- **Unity 通知**: `sendToUnity(objectName:method:message:)` で `OnContentCardsPrefetched` / `OnPropositionsUpdated`。手動更新はローディング表示 → 15 秒タイムアウト or 完了で `success:` / `failed:` / `timeout:` + surfacePath を送る
 
 ### Proposition の手動更新
 
@@ -320,13 +315,13 @@ sequenceDiagram
     C->>U: UI 更新
 ```
 
-- Unity: 「Update Propositions」ボタンで `UpdatePropositionsManually` → `_ios_aep_updatePropositionsManually(surfacePath)`。
-- Swift: `showLoadingOverlay` → `Messaging.updatePropositionsForSurfaces([surface])`。15 秒タイムアウトと完了コールバックの両方で `dismissLoadingOverlay` し、`OnPropositionsUpdated("success|failed|timeout:" + surfacePath)` で Unity に通知。
-- Unity: `OnPropositionsUpdated` で success 時はボタン有効化とメッセージ表示、failed/timeout 時は `DisplayErrorMessage`。
+- **Unity**: 「Update Propositions」→ `UpdatePropositionsManually` → `_ios_aep_updatePropositionsManually(surfacePath)`
+- **Swift**: `showLoadingOverlay` → `Messaging.updatePropositionsForSurfaces([surface])`。15 秒タイムアウト or 完了で `dismissLoadingOverlay`、`OnPropositionsUpdated("success|failed|timeout:" + surfacePath)` で通知
+- **Unity**: `OnPropositionsUpdated` — success 時はボタン有効化・メッセージ表示、failed/timeout 時は `DisplayErrorMessage`
 
 ---
 
 ## 動作環境・ビルド
 
-- Unity で iOS ビルドを行い、Xcode で開く。Swift と Objective-C のブリッジ、および AEP 系 CocoaPods がリンクされている前提です。
-- 初期化用の Launch App ID は Swift 内でハードコードされています。必要に応じて差し替えてください。
+- Unity で iOS ビルド → Xcode で開く。Swift/ObjC ブリッジと AEP 系 CocoaPods がリンクされている前提
+- 初期化用 Launch App ID は Swift 内でハードコード。必要に応じて差し替える
