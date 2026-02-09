@@ -1,8 +1,8 @@
 # AEP SDK Test
 
-Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。
-
----
+Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。<br>
+[README_technical_review.md](README_technical_review.md) に裏どり情報あり。<br>
+※ 全て AI まとめ
 
 ## 目次
 
@@ -39,14 +39,6 @@ Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネ�
 - **Unity → ネイティブ**: 画面操作 → C# → .mm → Swift → AEP SDK
 - **ネイティブ → Unity**: Swift コールバック / `sendToUnity` → .mm の `UnitySendMessage` → C# の `OnXxx(string)` で UI 更新
 
-#### 構成の理由
-
-- **C# からネイティブ**: Unity iOS では **C ABI の関数を `DllImport("__Internal")` で呼ぶ**形式のみサポート。Swift/ObjC を直接呼べないため、C の入り口が必要。
-- **.mm を挟む**: `.mm` で `extern "C"` により C リンケージの関数を定義し、その中で Swift の `AEPSdkBridge` を呼ぶ。Swift は `@objc` と `UnityFramework-Swift.h` で ObjC から呼び出し可能。経路は C# → C 関数 → Swift。
-- **ネイティブ → Unity**: 戻りは **`UnitySendMessage(objectName, methodName, message)` のみ**。非同期結果は Swift のコールバック内、または .mm のブロック内で `UnitySendMessage` を呼んで C# に渡す。
-
-→ **呼び出しは C 関数のみ・戻りは UnitySendMessage のみ**という iOS ブリッジ仕様のため、C の入り口を持つ .mm と Swift の 2 段構成にしている。
-
 ```mermaid
 flowchart LR
     subgraph Unity["Unity 画面"]
@@ -79,7 +71,13 @@ flowchart LR
     Callbacks --> UI
 ```
 
-詳細は上記フローチャートを参照。
+#### 構成の理由
+
+- **C# からネイティブ**: Unity iOS では **C ABI の関数を `DllImport("__Internal")` で呼ぶ**形式のみサポート。Swift/ObjC を直接呼べないため、C の入り口が必要。
+- **.mm を挟む**: `.mm` で `extern "C"` により C リンケージの関数を定義し、その中で Swift の `AEPSdkBridge` を呼ぶ。Swift は `@objc` と `UnityFramework-Swift.h` で ObjC から呼び出し可能。経路は C# → C 関数 → Swift。
+- **ネイティブ → Unity**: 戻りは **`UnitySendMessage(objectName, methodName, message)` のみ**。非同期結果は Swift のコールバック内、または .mm のブロック内で `UnitySendMessage` を呼んで C# に渡す。
+
+→ **呼び出しは C 関数のみ・戻りは UnitySendMessage のみ**という iOS ブリッジ仕様のため、C の入り口を持つ .mm と Swift の 2 段構成にしている。
 
 ### 初期化フロー
 
@@ -117,15 +115,15 @@ sequenceDiagram
 
 ### ネイティブブリッジ一覧（C# ↔ C ↔ Swift）
 
-| C# の DllImport | .mm の C 関数 | Swift メソッド | 用途 |
-|-----------------|----------------|----------------|------|
-| `_ios_aep_initialize` | `_ios_aep_initialize` | `setupSDKWithCallback:` | 非同期初期化、完了時コールバック名で Unity に通知 |
-| `_ios_aep_startAssurance` | `_ios_aep_startAssurance` | `startAssuranceSession` | Assurance 手動起動 |
-| `_ios_aep_sendEvent` | `_ios_aep_sendEvent` | `sendEvent:jsonData:` | Edge イベント送信 |
-| `_ios_aep_updateIdentities` | `_ios_aep_updateIdentities` | `updateIdentities:identifier:` | Identity 更新 |
-| `_ios_aep_getContentCardsForUnity` | `_ios_aep_getContentCardsForUnity` | `getContentCardsForUnity:callback:` | カード JSON 取得、コールバックで Unity に文字列渡し |
-| `_ios_aep_showContentCardsWithTemplates` | `_ios_aep_showContentCardsWithTemplates` | `showContentCardsSwiftUIWithTemplates:templateStyle:` | ネイティブドロワーでテンプレート表示 |
-| `_ios_aep_updatePropositionsManually` | `_ios_aep_updatePropositionsManually` | `updatePropositionsManually:` | Proposition 手動更新、完了は `OnPropositionsUpdated` で通知 |
+| メソッド | 用途 |
+|---------|------|
+| C#:`_ios_aep_initialize`<br>C:`_ios_aep_initialize`<br>Swift:`setupSDKWithCallback:` | 非同期初期化、完了時コールバック名で Unity に通知 |
+| C#:`_ios_aep_startAssurance`<br>C:`_ios_aep_startAssurance`<br>Swift:`startAssuranceSession` | Assurance 手動起動 |
+| C#:`_ios_aep_sendEvent`<br>C:`_ios_aep_sendEvent`<br>Swift:`sendEvent:jsonData:` | Edge イベント送信 |
+| C#:`_ios_aep_updateIdentities`<br>C:`_ios_aep_updateIdentities`<br>Swift:`updateIdentities:identifier:` | Identity 更新 |
+| C#:`_ios_aep_getContentCardsForUnity`<br>C:`_ios_aep_getContentCardsForUnity`<br>Swift:`getContentCardsForUnity:callback:` | カード JSON 取得、コールバックで Unity に文字列渡し |
+| C#:`_ios_aep_showContentCardsWithTemplates`<br>C:`_ios_aep_showContentCardsWithTemplates`<br>Swift:`showContentCardsSwiftUIWithTemplates:templateStyle:` | ネイティブドロワーでテンプレート表示 |
+| C#:`_ios_aep_updatePropositionsManually`<br>C:`_ios_aep_updatePropositionsManually`<br>Swift:`updatePropositionsManually:` | Proposition 手動更新、完了は `OnPropositionsUpdated` で通知 |
 
 ### Unity 側の主要状態
 
@@ -154,8 +152,8 @@ AJO Content Cards の概要と実装の対応関係をまとめた章。
 
 | 用語 | 説明 |
 |------|------|
-| **Surface** | 配信場所を識別するパス（例: `"square"`）。AJO で設定した Surface と一致させる。 |
-| **Proposition** | Surface に紐づく「どのカードを出すか」の情報。SDK がキャッシュし、`getPropositionsForSurfaces` / `getContentCardsUI` で取得。 |
+| **Surface** | 配信場所を識別するパス（例: `"square"`）。iOS では内部で `mobileapp://<bundleId>/path` の URI になる。AJO で設定した Surface と一致させる。 |
+| **Proposition** | Surface に紐づく「どのカードを出すか」の情報。SDK がキャッシュし、`getPropositionsForSurfaces` で取得。ネイティブテンプレート表示には `getContentCardsUI` で ContentCardUI を取得する。 |
 | **Content Card** | 1 枚分のカードデータ（スキーマは `ContentCardSchemaData`）。AJO の title/body/image/buttons 等のネスト構造を持つ。 |
 | **テンプレート** | ネイティブ表示用。AJO の施策に応じて Large / Small / ImageOnly などが選ばれ、SDK の `getContentCardsUI(for:customizer:listener:)` でビューが生成される。 |
 
