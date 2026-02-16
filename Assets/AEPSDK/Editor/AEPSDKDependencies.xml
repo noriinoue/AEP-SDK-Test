@@ -5,5 +5,6 @@
     <iosPod name="AEPEdgeIdentity" minTargetSdk="15.0" />
     <iosPod name="AEPAssurance" minTargetSdk="15.0" />
     <iosPod name="AEPMessaging" minTargetSdk="15.0" />
+    <iosPod name="AEPLifecycle" minTargetSdk="15.0" />
   </iosPods>
 </dependencies>
