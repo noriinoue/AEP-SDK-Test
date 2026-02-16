@@ -86,6 +86,10 @@ Assets/_Recovery/
 # Crashlytics generated file
 crashlytics-build.properties
 
+# AEP Launch App ID (secret - do not commit)
+# Copy AEPAppId.txt.sample to AEPAppId.txt and set your Launch app id.
+Assets/StreamingAssets/AEPAppId.txt
+
 # Packed Addressables
 [Aa]ssets/[Aa]ddressable[Aa]ssets[Dd]ata/*/*.bin*
 

@@ -7,8 +7,9 @@ Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネ�
 ## 目次
 
 1. [プロジェクト概要](#プロジェクト概要)
-2. [実装状態の詳細](#実装状態の詳細)
-3. [AJO Content Cards の実装](#ajo-content-cards-の実装)
+2. [セットアップ（AEP App ID）](#セットアップaep-app-id)
+3. [実装状態の詳細](#実装状態の詳細)
+4. [AJO Content Cards の実装](#ajo-content-cards-の実装)
 
 ---
 
@@ -21,6 +22,21 @@ Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネ�
   - **Content Cards**: 3 種の表示（Text / Native / Scroll View）
   - Proposition 手動更新（完了・失敗・タイムアウトを Unity に通知）
   - Assurance 手動起動（デバッグ用、オプションで起動時自動起動）
+
+---
+
+## セットアップ（AEP App ID）
+
+iOS ビルドで AEP SDK を初期化するには **Launch の App ID** が必要です。この値はリポジトリに含めず、各環境で設定します。
+
+1. **サンプルをコピー**  
+   `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピーする。
+2. **App ID を記入**  
+   `AEPAppId.txt` を開き、`YOUR_LAUNCH_APP_ID_HERE` を Adobe Launch の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置き換える。
+3. **コミットしない**  
+   `AEPAppId.txt` は `.gitignore` で除外されているため、そのままコミットされません。
+
+初回クローン時や CI では、上記のとおり `AEPAppId.txt` を用意してから iOS ビルドしてください。未設定の場合は初期化が失敗し、Unity のコンソールにエラーが表示されます。
 
 ---
 
@@ -90,9 +106,10 @@ sequenceDiagram
     participant AEP as AEP SDK
 
     U->>C: Awake → InitializeSDKAsync
-    C->>M: _ios_aep_initialize("AEPManager", "OnSDKInitialized")
-    M->>S: setupSDKWithCallback:
-    S->>AEP: MobileCore.initialize(appId:...)
+    C->>C: StreamingAssets/AEPAppId.txt を読み取り
+    C->>M: _ios_aep_initialize(appId, "AEPManager", "OnSDKInitialized")
+    M->>S: setupSDKWithAppId:callback:
+    S->>AEP: MobileCore.initialize(appId: 渡された値)
     AEP-->>S: 完了
     S->>S: コールバック(true)
     S->>M: (ブロック経由) 結果 "success"

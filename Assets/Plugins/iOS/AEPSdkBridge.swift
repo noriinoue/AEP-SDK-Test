@@ -36,21 +36,22 @@ private func sendToUnity(objectName: String, method: String, message: String) {
     private static var isInitialized = false
     private static var initializationCallbacks: [(Bool) -> Void] = []
     
-    // 非同期でSDKを初期化（Assuranceは自動起動しない）
-    @objc(setupSDKWithCallback:)
-    public static func setupSDK(callback: @escaping (Bool) -> Void) {
-        // 既に初期化済みの場合は即座にコールバック
-        if isInitialized {
-            DispatchQueue.main.async {
-                callback(true)
-            }
+    // 非同期でSDKを初期化（appId は Unity C# が StreamingAssets から読み渡す。Assuranceは自動起動しない）
+    @objc(setupSDKWithAppId:callback:)
+    public static func setupSDK(appId: String, callback: @escaping (Bool) -> Void) {
+        let appIdTrimmed = (appId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if appIdTrimmed.isEmpty {
+            print("AEP SDK initialization failed: appId is empty. Set Assets/StreamingAssets/AEPAppId.txt (see AEPAppId.txt.sample).")
+            DispatchQueue.main.async { callback(false) }
             return
         }
         
-        // コールバックをキューに追加
-        initializationCallbacks.append(callback)
+        if isInitialized {
+            DispatchQueue.main.async { callback(true) }
+            return
+        }
         
-        // 初回のみ初期化を実行
+        initializationCallbacks.append(callback)
         if initializationCallbacks.count > 1 {
             return
         }
@@ -62,7 +63,7 @@ private func sendToUnity(objectName: String, method: String, message: String) {
         
         // MobileCore.initialize のコールバックで初期化完了を検知（wait 処理を使わない）
         // https://developer.adobe.com/client-sdks/home/base/mobile-core/api-reference/#initialize
-        MobileCore.initialize(appId: "6a203c8a0ff8/0d1cfe126ee2/launch-8e810d80e4b7-development") {
+        MobileCore.initialize(appId: appIdTrimmed) {
             let elapsedTime = Date().timeIntervalSince(startTime)
             
             DispatchQueue.main.async {
@@ -108,6 +109,7 @@ private func sendToUnity(objectName: String, method: String, message: String) {
             return
         }
         // Assurance.startSession() は必要に応じてここで呼ぶ
+        Assurance.startSession()
     }
 
     @objc public static func sendEvent(_ eventName: String, jsonData: String) {
@@ -122,6 +124,7 @@ private func sendToUnity(objectName: String, method: String, message: String) {
         
         let experienceEvent = ExperienceEvent(xdm: xdmData)
         Edge.sendEvent(experienceEvent: experienceEvent)
+        MobileCore.track(action: "sendEvent click", data: ["testFullscreen": "true"])
     }
     
     @objc public static func updateIdentities(_ identifierType: String, identifier: String) {

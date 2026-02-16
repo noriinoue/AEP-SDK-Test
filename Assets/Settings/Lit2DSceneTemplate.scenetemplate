@@ -59,7 +59,7 @@ MonoBehaviour:
   m_Script: {fileID: 13966, guid: 0000000000000000e000000000000000, type: 0}
   m_Name: Lit2DSceneTemplate
   m_EditorClassIdentifier: 
-  templateScene: {fileID: 102900000, guid: 2cda990e2423bbf4892e6590ba056729, type: 3}
+  templateScene: {fileID: 2, guid: 2cda990e2423bbf4892e6590ba056729, type: 3}
   templateName: Lit 2D (URP)
   description: Contains an orthographic camera and a Global Light 2D. Works with
     the 2D Renderer in Universal RP.

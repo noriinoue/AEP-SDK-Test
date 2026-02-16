@@ -95,8 +95,11 @@ public class AEPManager : MonoBehaviour
     // Native iOS Bridge (DllImport)
     // ============================================================
     
+    /// <summary>StreamingAssets 内の AEP Launch App ID ファイル名（実体は .gitignore で秘匿）</summary>
+    private const string AEP_APP_ID_FILENAME = "AEPAppId.txt";
+    
     [DllImport("__Internal")]
-    private static extern void _ios_aep_initialize(string gameObjectName, string callbackMethodName);
+    private static extern void _ios_aep_initialize(string appId, string gameObjectName, string callbackMethodName);
     
     [DllImport("__Internal")]
     private static extern void _ios_aep_startAssurance();
@@ -149,7 +152,7 @@ public class AEPManager : MonoBehaviour
     // ============================================================
     
     /// <summary>
-    /// AEP SDKを非同期で初期化
+    /// AEP SDKを非同期で初期化（iOS: StreamingAssets/AEPAppId.txt から appId を読み取りネイティブに渡す）
     /// </summary>
     private IEnumerator InitializeSDKAsync()
     {
@@ -162,8 +165,8 @@ public class AEPManager : MonoBehaviour
         Debug.Log("AEP SDK initialization started (async)...");
         
         #if UNITY_IOS && !UNITY_EDITOR
-            // ネイティブ側の非同期初期化を呼び出し
-            _ios_aep_initialize(gameObject.name, "OnSDKInitialized");
+            // StreamingAssets から Launch App ID を読み取り、ネイティブに渡す（appId はリポジトリに含めない）
+            yield return LoadAEPAppIdAndInitialize();
         #else
             // エディタモードでは即座に初期化完了とする
             yield return new WaitForSeconds(0.1f);
@@ -171,6 +174,39 @@ public class AEPManager : MonoBehaviour
         #endif
         
         yield return null;
+    }
+    
+    /// <summary>
+    /// StreamingAssets/AEPAppId.txt を読み、ネイティブ初期化を呼び出す。
+    /// ファイルがない場合はエラーにしてコールバックで失敗を返す。
+    /// iOS では streamingAssetsPath がスキームなしパスを返すため、UnityWebRequest 用に file:// を付与する。
+    /// </summary>
+    private IEnumerator LoadAEPAppIdAndInitialize()
+    {
+        string path = System.IO.Path.Combine(Application.streamingAssetsPath, AEP_APP_ID_FILENAME);
+        string url = path;
+        if (!path.Contains("://"))
+        {
+            url = "file://" + path;
+        }
+        using (UnityWebRequest req = UnityWebRequest.Get(url))
+        {
+            yield return req.SendWebRequest();
+            string appId = null;
+            if (req.result == UnityWebRequest.Result.Success && !string.IsNullOrWhiteSpace(req.downloadHandler?.text))
+            {
+                appId = req.downloadHandler.text.Trim();
+            }
+            if (string.IsNullOrEmpty(appId))
+            {
+                Debug.LogError(
+                    "AEP App ID not found. Copy Assets/StreamingAssets/AEPAppId.txt.sample to AEPAppId.txt and set your Launch app id. " +
+                    "Do not commit AEPAppId.txt.");
+                OnSDKInitialized("failed");
+                yield break;
+            }
+            _ios_aep_initialize(appId, gameObject.name, "OnSDKInitialized");
+        }
     }
     
     /// <summary>

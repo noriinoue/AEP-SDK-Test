@@ -10,16 +10,16 @@ extern "C" {
     UIViewController* _unity_get_view_controller() {
         return UnityGetGLViewController();
     }
-    // 非同期初期化（コールバックでUnityに通知）
-    void _ios_aep_initialize(const char* gameObjectName, const char* callbackMethodName) {
+    // 非同期初期化（appId は C# が StreamingAssets から読み取り渡す。コールバックでUnityに通知）
+    void _ios_aep_initialize(const char* appId, const char* gameObjectName, const char* callbackMethodName) {
+        NSString *appIdStr = appId ? [NSString stringWithUTF8String:appId] : @"";
         NSString *gameObjectNameStr = [NSString stringWithUTF8String:gameObjectName];
         NSString *callbackMethodNameStr = [NSString stringWithUTF8String:callbackMethodName];
         
-        [AEPSdkBridge setupSDKWithCallback:^(BOOL success) {
-            // 初期化完了をUnityに通知
+        [AEPSdkBridge setupSDKWithAppId:appIdStr callback:^(BOOL success) {
             const char* result = success ? "success" : "failed";
-            UnitySendMessage([gameObjectNameStr UTF8String], 
-                           [callbackMethodNameStr UTF8String], 
+            UnitySendMessage([gameObjectNameStr UTF8String],
+                           [callbackMethodNameStr UTF8String],
                            result);
         }];
     }
