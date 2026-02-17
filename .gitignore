@@ -12,8 +12,12 @@ build/
 # iOS build output (Unity generates this - root level only)
 /ios/
 
-# But keep Assets/Plugins/iOS/ (our source files)
+# Android build output (Unity generates this - root level only)
+/android/
+
+# But keep Assets/Plugins/iOS/ and Assets/Plugins/Android/ (our source files)
 !Assets/Plugins/iOS/
+!Assets/Plugins/Android/
 
 # Visual Studio / Rider / IDEs
 .vs/
