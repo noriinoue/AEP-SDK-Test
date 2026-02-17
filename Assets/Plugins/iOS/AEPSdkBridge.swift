@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
+import WebKit
 import AEPCore
+import AEPServices
 import AEPAssurance
 import AEPEdge
 import AEPEdgeIdentity
@@ -24,6 +26,143 @@ private func sendToUnity(objectName: String, method: String, message: String) {
     }
 }
 
+// MARK: - In-App Message: adbinapp://...?link=... のインターセプト → アプリ内 WebView
+// 公式デモと同様に Message の WKWebView に WKNavigationDelegate を設定し、
+// adbinapp かつ link ありをキャンセルして link をアプリ内 WebView で開く。
+private final class InAppWebViewNavigationDelegate: NSObject, WKNavigationDelegate {
+    private weak var message: Message?
+    fileprivate static var retainedDelegate: InAppWebViewNavigationDelegate?
+    
+    init(message: Message) {
+        self.message = message
+        super.init()
+    }
+    
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url,
+              url.scheme?.lowercased() == "adbinapp" else {
+            decisionHandler(.allow)
+            return
+        }
+        guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            decisionHandler(.allow)
+            return
+        }
+        let linkValue = comp.queryItems?.first(where: { $0.name == "link" })?.value?.removingPercentEncoding
+            ?? comp.queryItems?.first(where: { $0.name == "target" })?.value?.removingPercentEncoding
+        guard let link = linkValue, !link.isEmpty else {
+            decisionHandler(.allow)
+            return
+        }
+        let interaction = comp.queryItems?.first(where: { $0.name == "interaction" })?.value ?? "webview"
+        decisionHandler(.cancel)
+        DispatchQueue.main.async { [weak self] in
+            _ = AEPSdkBridge.openWebViewWithURLIfNeeded(link)
+            self?.message?.dismiss(suppressAutoTrack: false)
+            self?.message?.track(interaction, withEdgeEventType: .interact)
+        }
+    }
+}
+
+// MARK: - In-App Message デリゲート（公式デモ MessagingDemoApp の MessageHandler に準拠）
+// 参照: https://github.com/adobe/aepsdk-messaging-ios/tree/main/TestApps/MessagingDemoApp
+// - Showable は FullscreenMessage として渡るため fullscreenMessage?.parent で Message を取得
+// - handleJavascriptMessage は shouldShowMessage 内で登録（表示前に登録する公式のやり方）
+// - WKWebView へのアクセスは DispatchQueue.main.async で行う（公式デモと同じ）
+@objc private class InAppMessageDelegate: NSObject, MessagingDelegate {
+    static let shared = InAppMessageDelegate()
+    
+    /// 公式デモと同様: shouldShowMessage 内で Message を取得し、handleJavascriptMessage 登録と WKWebView の navigationDelegate 設定を行う
+    func shouldShowMessage(message: Showable) -> Bool {
+        let fullscreenMessage = message as? FullscreenMessage
+        let msg = fullscreenMessage?.parent ?? (message as? Message)
+        guard let message = msg else { return true }
+        
+        // 公式デモと同様に JS ハンドラを登録（表示前に登録）
+        message.handleJavascriptMessage("AEPInAppCallback") { [weak message] body in
+            let payload: String
+            if let s = body as? String {
+                payload = s
+            } else if let data = body, let jsonData = try? JSONSerialization.data(withJSONObject: data), let s = String(data: jsonData, encoding: .utf8) {
+                payload = s
+            } else {
+                payload = ""
+            }
+            if !payload.isEmpty {
+                sendToUnity(objectName: "AEPManager", method: "OnInAppMessageAction", message: payload)
+            }
+            message?.track(payload.isEmpty ? "click" : payload, withEdgeEventType: .interact)
+        }
+        
+        // 公式デモと同様: WKWebView へのアクセスは main スレッドで。ここで adbinapp インターセプト用の navigationDelegate を設定
+        DispatchQueue.main.async {
+            if let webView = message.view as? WKWebView {
+                let navDelegate = InAppWebViewNavigationDelegate(message: message)
+                InAppWebViewNavigationDelegate.retainedDelegate = navDelegate
+                webView.navigationDelegate = navDelegate
+            }
+        }
+        
+        return true
+    }
+    
+    func onShow(message: Showable) {
+        // 必要なら表示時の追加処理（公式デモではログ程度）
+    }
+    
+    func onDismiss(message: Showable) {
+        InAppWebViewNavigationDelegate.retainedDelegate = nil
+    }
+}
+
+// MARK: - In-App WebView（link をアプリ内で表示する用）
+private final class InAppWebViewController: UIViewController {
+    private let url: URL
+    private let onClose: () -> Void
+    
+    init(url: URL, onClose: @escaping () -> Void) {
+        self.url = url
+        self.onClose = onClose
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .white
+        
+        let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.allowsBackForwardNavigationGestures = true
+        view.addSubview(webView)
+        
+        let closeButton = UIButton(type: .system)
+        closeButton.setTitle("閉じる", for: .normal)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        view.addSubview(closeButton)
+        
+        NSLayoutConstraint.activate([
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            webView.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 8),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        
+        webView.load(URLRequest(url: url))
+    }
+    
+    @objc private func closeTapped() {
+        dismiss(animated: true) { [weak self] in
+            self?.onClose()
+        }
+    }
+}
+
+// MARK: - アプリ内 WebView 表示（MessagingDelegate で adbinapp://dismiss?link=... をインターセプトしたときに使用）
 @objc public class AEPSdkBridge: NSObject {
     // MARK: - 待機時間・タイムアウト定数（秒）
     /// SDK初期化後のプリフェッチ開始までの遅延
@@ -66,10 +205,13 @@ private func sendToUnity(objectName: String, method: String, message: String) {
         MobileCore.initialize(appId: appIdTrimmed) {
             let elapsedTime = Date().timeIntervalSince(startTime)
             
-            DispatchQueue.main.async {
+                DispatchQueue.main.async {
                 isInitialized = true
                 print("AEP SDK initialization completed in \(String(format: "%.2f", elapsedTime))s")
                 print("SDK will continue loading configurations in background")
+                
+                // In-App Message のボタン押下をネイティブで受け取り Unity に通知するため MessagingDelegate を登録
+                MobileCore.messagingDelegate = InAppMessageDelegate.shared
                 
                 for cb in initializationCallbacks {
                     cb(true)
@@ -305,6 +447,48 @@ private func sendToUnity(objectName: String, method: String, message: String) {
         controller.dismiss(animated: true) {
             errorHostingController = nil
         }
+    }
+    
+    // MARK: - adbinapp://ok → アプリ内 WebView
+    private static var webViewHostingController: UIViewController?
+    
+    /// link の URL で WebView を開く（adbinapp://host/path は https に変換）。MessagingDelegate のナビインターセプトから呼ばれる。
+    /// link が adbinapp スキームの場合は https に変換してから表示する。処理した場合 true を返す。
+    @objc(openWebViewWithURLIfNeeded:)
+    public static func openWebViewWithURLIfNeeded(_ link: String) -> Bool {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        
+        let loadURL: URL?
+        if let url = URL(string: trimmed), url.scheme?.lowercased() == "adbinapp" {
+            var comp = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            comp?.scheme = "https"
+            loadURL = comp?.url
+        } else if let url = URL(string: trimmed), url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "http" {
+            loadURL = url
+        } else {
+            loadURL = nil
+        }
+        
+        guard let urlToLoad = loadURL else {
+            print("AEP WebView: invalid link for WebView: \(trimmed)")
+            return false
+        }
+        
+        DispatchQueue.main.async {
+            guard let unityVC = unityGetViewController() else {
+                print("AEP WebView: Unity view controller not found")
+                return
+            }
+            let webVC = InAppWebViewController(url: urlToLoad) {
+                webViewHostingController = nil
+            }
+            webViewHostingController = webVC
+            unityVC.present(webVC, animated: true) {
+                print("AEP WebView opened: \(urlToLoad.absoluteString)")
+            }
+        }
+        return true
     }
     
     // MARK: - Content Cards with Template (SwiftUI ScrollView)

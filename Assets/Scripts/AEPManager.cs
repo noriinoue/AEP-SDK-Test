@@ -92,12 +92,13 @@ public class AEPManager : MonoBehaviour
     private static AEPManager instance;
     
     // ============================================================
-    // Native iOS Bridge (DllImport)
+    // Native iOS Bridge (DllImport) — iOS ビルド時のみリンク（Android では未定義にしてリンカエラーを防ぐ）
     // ============================================================
     
     /// <summary>StreamingAssets 内の AEP Launch App ID ファイル名（実体は .gitignore で秘匿）</summary>
     private const string AEP_APP_ID_FILENAME = "AEPAppId.txt";
     
+#if UNITY_IOS
     [DllImport("__Internal")]
     private static extern void _ios_aep_initialize(string appId, string gameObjectName, string callbackMethodName);
     
@@ -118,6 +119,7 @@ public class AEPManager : MonoBehaviour
     
     [DllImport("__Internal")]
     private static extern void _ios_aep_updatePropositionsManually(string surfacePath);
+#endif
 
     // ============================================================
     // Unity Lifecycle Methods
@@ -165,10 +167,10 @@ public class AEPManager : MonoBehaviour
         Debug.Log("AEP SDK initialization started (async)...");
         
         #if UNITY_IOS && !UNITY_EDITOR
-            // StreamingAssets から Launch App ID を読み取り、ネイティブに渡す（appId はリポジトリに含めない）
+            yield return LoadAEPAppIdAndInitialize();
+        #elif UNITY_ANDROID && !UNITY_EDITOR
             yield return LoadAEPAppIdAndInitialize();
         #else
-            // エディタモードでは即座に初期化完了とする
             yield return new WaitForSeconds(0.1f);
             OnSDKInitialized("success");
         #endif
@@ -205,7 +207,14 @@ public class AEPManager : MonoBehaviour
                 OnSDKInitialized("failed");
                 yield break;
             }
+#if UNITY_IOS
             _ios_aep_initialize(appId, gameObject.name, "OnSDKInitialized");
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+            {
+                jc.CallStatic("initialize", appId, gameObject.name, "OnSDKInitialized");
+            }
+#endif
         }
     }
     
@@ -281,8 +290,11 @@ public class AEPManager : MonoBehaviour
         
         #if UNITY_IOS && !UNITY_EDITOR
             _ios_aep_startAssurance();
+        #elif UNITY_ANDROID && !UNITY_EDITOR
+            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                jc.CallStatic("startAssuranceSession");
         #else
-            Debug.Log("Assurance session would start on iOS device (async)");
+            Debug.Log("Assurance session would start on device (async)");
         #endif
     }
     
@@ -297,8 +309,14 @@ public class AEPManager : MonoBehaviour
                 Debug.Log("Manually starting Assurance session...");
                 _ios_aep_startAssurance();
             });
+        #elif UNITY_ANDROID && !UNITY_EDITOR
+            ExecuteWhenInitialized(() => {
+                Debug.Log("Manually starting Assurance session...");
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                    jc.CallStatic("startAssuranceSession");
+            });
         #else
-            Debug.Log("Assurance only available on iOS device");
+            Debug.Log("Assurance only available on iOS/Android device");
         #endif
     }
 
@@ -327,8 +345,12 @@ public class AEPManager : MonoBehaviour
             #if UNITY_IOS && !UNITY_EDITOR
                 _ios_aep_sendEvent("application.click", jsonData);
                 Debug.Log("Edge.sendEvent called with SendEvent");
+            #elif UNITY_ANDROID && !UNITY_EDITOR
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                    jc.CallStatic("sendEvent", "application.click", jsonData);
+                Debug.Log("Edge.sendEvent called (Android) with SendEvent");
             #else
-                Debug.Log($"SendEvent: Edge.sendEvent would be called on iOS device with data: {jsonData}");
+                Debug.Log($"SendEvent: would be called on device with data: {jsonData}");
             #endif
         });
     }
@@ -351,8 +373,15 @@ public class AEPManager : MonoBehaviour
                 _ios_aep_sendEvent("application.click", jsonData);
                 _ios_aep_updateIdentities("extendedPersonalId", crmId);
                 Debug.Log($"Identity.updateIdentities called with CRM ID: {crmId}");
+            #elif UNITY_ANDROID && !UNITY_EDITOR
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                {
+                    jc.CallStatic("sendEvent", "application.click", jsonData);
+                    jc.CallStatic("updateIdentities", "extendedPersonalId", crmId);
+                }
+                Debug.Log($"Identity.updateIdentities called (Android) with CRM ID: {crmId}");
             #else
-                Debug.Log($"UpdateIdentities: Would update CRM ID: {crmId} on iOS device with data: {jsonData}");
+                Debug.Log($"UpdateIdentities: would update CRM ID: {crmId} on device with data: {jsonData}");
             #endif
         });
     }
@@ -404,11 +433,17 @@ public class AEPManager : MonoBehaviour
 
         #if UNITY_IOS && !UNITY_EDITOR
             _ios_aep_sendEvent("application.click", jsonData);
-            // 取得したJSONをテキストエリアに表示（コールバック: OnContentCardsReceivedForText）
             _ios_aep_getContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForText");
             Debug.Log($"ShowContentCardsText: requesting JSON for text area");
+        #elif UNITY_ANDROID && !UNITY_EDITOR
+            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+            {
+                jc.CallStatic("sendEvent", "application.click", jsonData);
+                jc.CallStatic("getContentCardsForUnity", surfacePath, gameObject.name, "OnContentCardsReceivedForText");
+            }
+            Debug.Log($"ShowContentCardsText: requesting JSON for text area (Android)");
         #else
-            Debug.Log($"ShowContentCardsText: Would request JSON on iOS device");
+            Debug.Log($"ShowContentCardsText: would request JSON on device");
         #endif
     }
 
@@ -428,8 +463,15 @@ public class AEPManager : MonoBehaviour
                 _ios_aep_sendEvent("application.click", jsonData);
                 _ios_aep_showContentCardsWithTemplates(surfacePath, "large");
                 Debug.Log("ShowContentCardsNative: opening native drawer");
+            #elif UNITY_ANDROID && !UNITY_EDITOR
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                {
+                    jc.CallStatic("sendEvent", "application.click", jsonData);
+                    jc.CallStatic("showContentCardsWithTemplates", surfacePath, "large");
+                }
+                Debug.Log("ShowContentCardsNative: (Android uses Scroll View for cards)");
             #else
-                Debug.Log("ShowContentCardsNative: Would open native drawer on iOS device");
+                Debug.Log("ShowContentCardsNative: would open native drawer on device");
             #endif
         });
     }
@@ -450,8 +492,15 @@ public class AEPManager : MonoBehaviour
                 _ios_aep_sendEvent("application.click", jsonData);
                 _ios_aep_getContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForScrollView");
                 Debug.Log("ShowContentCardsScrollView: updating Scroll View");
+            #elif UNITY_ANDROID && !UNITY_EDITOR
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                {
+                    jc.CallStatic("sendEvent", "application.click", jsonData);
+                    jc.CallStatic("getContentCardsForUnity", surfacePath, gameObject.name, "OnContentCardsReceivedForScrollView");
+                }
+                Debug.Log("ShowContentCardsScrollView: updating Scroll View (Android)");
             #else
-                Debug.Log("ShowContentCardsScrollView: Would update Scroll View on iOS device");
+                Debug.Log("ShowContentCardsScrollView: would update Scroll View on device");
             #endif
         });
     }
@@ -482,12 +531,17 @@ public class AEPManager : MonoBehaviour
 
             #if UNITY_IOS && !UNITY_EDITOR
                 _ios_aep_sendEvent("application.click", jsonData);
-                // Propositionを手動更新（完了通知はOnPropositionsUpdatedで受け取る）
                 _ios_aep_updatePropositionsManually(surfacePath);
                 Debug.Log($"Manually updating propositions for: {surfacePath}");
+            #elif UNITY_ANDROID && !UNITY_EDITOR
+                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
+                {
+                    jc.CallStatic("sendEvent", "application.click", jsonData);
+                    jc.CallStatic("updatePropositionsManually", surfacePath);
+                }
+                Debug.Log($"Manually updating propositions for: {surfacePath} (Android)");
             #else
-                Debug.Log($"UpdatePropositionsManually: Would update propositions on iOS device");
-                // エディタでもメッセージ更新をテスト
+                Debug.Log($"UpdatePropositionsManually: would update on device");
                 StartCoroutine(SimulatePropositionUpdate(surfacePath));
             #endif
         });
@@ -616,6 +670,17 @@ public class AEPManager : MonoBehaviour
             Debug.LogWarning($"Proposition update timed out for surface: {surfacePath}");
             DisplayErrorMessage($"Update Timed Out\n\nSurface: {surfacePath}\n\nThe request took too long. Please try again.");
         }
+    }
+    
+    /// <summary>
+    /// In-App Message 内のボタン押下時にネイティブから呼ばれる（MessagingDelegate + handleJavascriptMessage 経由）。
+    /// メッセージ HTML で webkit.messageHandlers.AEPInAppCallback.postMessage(action) を呼ぶと、action がここに渡る。
+    /// </summary>
+    public void OnInAppMessageAction(string payload)
+    {
+        if (string.IsNullOrEmpty(payload)) return;
+        Debug.Log($"[In-App Message] Button/action received: {payload}");
+        // 必要に応じて payload に応じた画面遷移・分析・UI 更新などを実装する
     }
     
     /// <summary>

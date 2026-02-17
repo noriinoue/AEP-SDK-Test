@@ -1,6 +1,6 @@
 # AEP SDK Test
 
-Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。<br>
+Unity で **iOS** ビルドし、AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。<br>
 [README_technical_review.md](README_technical_review.md) に裏どり情報あり。<br>
 ※ 全て AI まとめ
 
@@ -10,16 +10,18 @@ Unity iOS ビルドで AEP SDK / AJO Content Cards を扱うサンプル。ネ�
 2. [セットアップ（AEP App ID）](#セットアップaep-app-id)
 3. [実装状態の詳細](#実装状態の詳細)
 4. [AJO Content Cards の実装](#ajo-content-cards-の実装)
+5. [AJO In-App Message のボタン押下](#ajo-in-app-message-のボタン押下)
 
 ---
 
 ## プロジェクト概要
 
-- **プラットフォーム**: Unity → iOS（ネイティブブリッジで AEP SDK を呼び出し）
+- **プラットフォーム**: Unity → **iOS**（ネイティブブリッジで AEP SDK を呼び出し）
 - **機能**
   - AEP SDK 初期化（非同期、コールバックで完了通知）
   - Edge イベント送信、Identity 更新（extendedPersonalId 等）
   - **Content Cards**: 3 種の表示（Text / Native / Scroll View）
+  - **In-App Message**: ボタン押下時の挙動（URL スキームまたは MessagingDelegate で Unity 通知）
   - Proposition 手動更新（完了・失敗・タイムアウトを Unity に通知）
   - Assurance 手動起動（デバッグ用、オプションで起動時自動起動）
 
@@ -336,7 +338,18 @@ sequenceDiagram
 
 ---
 
+## AJO In-App Message のボタン押下
+
+画面に表示した AJO の In-App Message で、ボタン押下時の挙動をどう作るかは **[Docs/InAppMessage_Button_Behavior.md](Docs/InAppMessage_Button_Behavior.md)** にまとめてある。
+
+- **方法 A（推奨・コード不要）**: メッセージのボタン／リンクの URL を `adbinapp://dismiss?interaction=...` や `adbinapp://dismiss?link=...` にすると、SDK が閉じる・トラッキング・外部リンク・ディープリンクを処理する。
+- **adbinapp の仕様**: `adbinapp://` は SDK が**内部で**処理するスキーム。アプリの URL スキームに登録するのは誤り。AJO のボタンは `adbinapp://dismiss?interaction=...&link=...` に統一され、**link は SDK が標準ブラウザで開く**のが標準。
+- **アプリ内 WebView**: `MessagingDelegate` で Message の WKWebView のナビゲーションをインターセプトし、`adbinapp://dismiss?link=...` をキャンセルして **link の URL をアプリ内 WebView**で開く実装をしている（`Docs/InAppMessage_Button_Behavior.md` の「方法 B」参照）。
+- **方法 C（JS 連携）**: `handleJavascriptMessage("AEPInAppCallback")` と HTML の `postMessage` で Unity の `AEPManager.OnInAppMessageAction(string)` に渡す。実装は `AEPSdkBridge.swift` の `InAppMessageDelegate` を参照。
+
+---
+
 ## 動作環境・ビルド
 
-- Unity で iOS ビルド → Xcode で開く。Swift/ObjC ブリッジと AEP 系 CocoaPods がリンクされている前提
-- 初期化用 Launch App ID は Swift 内でハードコード。必要に応じて差し替える
+- Unity で iOS ビルド → Xcode で開く。Swift/ObjC ブリッジと AEP 系 CocoaPods がリンクされている前提。
+- 初期化用 Launch App ID は Swift 内でハードコード。必要に応じて差し替える。
