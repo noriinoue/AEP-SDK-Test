@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System;
 using System.Collections;
@@ -27,18 +26,146 @@ public class ContentCardData
 }
 
 /// <summary>
-/// ネイティブコードから受け取るコンテンツカードのレスポンス構造
+/// ネイティブコードから受け取るコンテンツカードのレスポンス構造（フラット形式）。JsonUtility 用に配列で定義。
 /// </summary>
 [Serializable]
 public class ContentCardsResponse
 {
-    public List<ContentCardData> cards;
+    public ContentCardData[] cards;
     public string error;
+}
+
+// ============================================================
+// Raw Content Cards (AJO 生構造) — ネイティブは生データを送り、C# でここから ContentCardData に変換する
+// ============================================================
+
+[Serializable]
+public class RawCardsResponse
+{
+    public RawCardItem[] cards;
+    public string error;
+}
+
+[Serializable]
+public class RawCardItem
+{
+    public RawContent content;
+}
+
+[Serializable]
+public class RawContent
+{
+    public NestedString title;
+    public NestedString body;
+    public NestedImage image;
+    public string actionUrl;
+    public RawButton[] buttons;
+}
+
+[Serializable]
+public class NestedString
+{
+    public string content;
+}
+
+[Serializable]
+public class NestedImage
+{
+    public string url;
+}
+
+[Serializable]
+public class RawButton
+{
+    public NestedString text;
+    public string actionUrl;
+}
+
+/// <summary>
+/// ネイティブから受け取った JSON をパースし、ContentCardData に変換する共通ロジック。
+/// フラット形式と AJO 生形式の両方に対応する。
+/// </summary>
+public static class ContentCardDataParser
+{
+    /// <summary>生形式の cards から 1 件分の ContentCardData を組み立てる</summary>
+    public static ContentCardData FromRawContent(RawContent c)
+    {
+        var card = new ContentCardData();
+        if (c?.title != null) card.title = c.title.content ?? "";
+        if (c?.body != null) card.body = c.body.content ?? "";
+        if (c?.image != null) card.imageUrl = c.image.url ?? "";
+        card.actionUrl = c?.actionUrl ?? "";
+        if (c?.buttons != null && c.buttons.Length > 0)
+        {
+            var first = c.buttons[0];
+            if (first?.text != null) card.buttonText = first.text.content ?? "";
+            if (string.IsNullOrEmpty(card.actionUrl) && !string.IsNullOrEmpty(first.actionUrl))
+                card.actionUrl = first.actionUrl;
+        }
+        return card;
+    }
+
+    /// <summary>JSON 文字列をパースして cards と error を返す。生形式またはフラット形式に対応。</summary>
+    public static bool TryParse(string json, out List<ContentCardData> cards, out string error)
+    {
+        cards = null;
+        error = null;
+        if (string.IsNullOrEmpty(json)) return false;
+
+        // 1) 生形式 {"cards":[{"content":{...}}],"error":...}
+        try
+        {
+            var raw = JsonUtility.FromJson<RawCardsResponse>(json);
+            if (raw?.cards != null && raw.cards.Length > 0 && raw.cards[0].content != null)
+            {
+                var list = new List<ContentCardData>();
+                foreach (var item in raw.cards)
+                {
+                    if (item?.content != null)
+                        list.Add(FromRawContent(item.content));
+                }
+                cards = list;
+                error = raw.error;
+                return true;
+            }
+            if (!string.IsNullOrEmpty(raw?.error))
+            {
+                error = raw.error;
+                return true;
+            }
+        }
+        catch { /* fallback to flat */ }
+
+        // 2) フラット形式 {"cards":[{"title":"",...}],"error":...}
+        try
+        {
+            var flat = JsonUtility.FromJson<ContentCardsResponse>(json);
+            if (flat?.cards != null)
+            {
+                cards = new List<ContentCardData>(flat.cards);
+                error = flat.error;
+                return true;
+            }
+            if (!string.IsNullOrEmpty(flat?.error))
+            {
+                error = flat.error;
+                return true;
+            }
+        }
+        catch { }
+
+        return false;
+    }
 }
 
 // ============================================================
 // Main Class: AEP SDK Manager
 // ============================================================
+// プロジェクト構成:
+// - AEPManager.cs: 共通ロジック（初期化フロー・イベント組み立て・UI・コールバック処理）。
+//   ネイティブ呼び出しは行わず、AEPNativeBridge に委譲する。
+// - AEPNativeBridge.cs: OS別のネイティブ呼び出しのみ（DllImport / AndroidJavaClass）。
+// - Android: AEPSdkBridge.java / iOS: AEPSdkBridge.swift は薄いラッパーとして維持。
 
 /// <summary>
 /// Adobe Experience Platform (AEP) SDKとUnityの橋渡しを行うマネージャークラス
@@ -91,35 +218,10 @@ public class AEPManager : MonoBehaviour
     private static Queue<System.Action> pendingActions = new Queue<System.Action>();
     private static AEPManager instance;
     
-    // ============================================================
-    // Native iOS Bridge (DllImport) — iOS ビルド時のみリンク（Android では未定義にしてリンカエラーを防ぐ）
-    // ============================================================
-    
     /// <summary>StreamingAssets 内の AEP Launch App ID ファイル名（実体は .gitignore で秘匿）</summary>
     private const string AEP_APP_ID_FILENAME = "AEPAppId.txt";
     
-#if UNITY_IOS
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_initialize(string appId, string gameObjectName, string callbackMethodName);
-    
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_startAssurance();
-
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_sendEvent(string eventName, string jsonData);
-    
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_updateIdentities(string identifierType, string identifier);
-    
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_getContentCardsForUnity(string surfacePath, string gameObjectName, string callbackMethodName);
-    
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_showContentCardsWithTemplates(string surfacePath, string templateStyle);
-    
-    [DllImport("__Internal")]
-    private static extern void _ios_aep_updatePropositionsManually(string surfacePath);
-#endif
+    // ネイティブ呼び出しは AEPNativeBridge に集約（OS別の分岐はそちらのみ）
 
     // ============================================================
     // Unity Lifecycle Methods
@@ -166,9 +268,7 @@ public class AEPManager : MonoBehaviour
         isInitializing = true;
         Debug.Log("AEP SDK initialization started (async)...");
         
-        #if UNITY_IOS && !UNITY_EDITOR
-            yield return LoadAEPAppIdAndInitialize();
-        #elif UNITY_ANDROID && !UNITY_EDITOR
+        #if !UNITY_EDITOR
             yield return LoadAEPAppIdAndInitialize();
         #else
             yield return new WaitForSeconds(0.1f);
@@ -207,14 +307,7 @@ public class AEPManager : MonoBehaviour
                 OnSDKInitialized("failed");
                 yield break;
             }
-#if UNITY_IOS
-            _ios_aep_initialize(appId, gameObject.name, "OnSDKInitialized");
-#elif UNITY_ANDROID && !UNITY_EDITOR
-            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-            {
-                jc.CallStatic("initialize", appId, gameObject.name, "OnSDKInitialized");
-            }
-#endif
+            AEPNativeBridge.Initialize(appId, gameObject.name, "OnSDKInitialized");
         }
     }
     
@@ -249,6 +342,11 @@ public class AEPManager : MonoBehaviour
             {
                 StartCoroutine(StartAssuranceSessionAsync());
             }
+            
+            // In-App Message のコールバック先を C# で指定（iOS のみ反映）
+            AEPNativeBridge.SetInAppMessageCallbackTarget(gameObject.name);
+            // プリフェッチは C# でタイミング・surface を指定して実行（OS 共通）
+            StartCoroutine(PrefetchContentCardsAfterInit());
         }
         else
         {
@@ -279,23 +377,27 @@ public class AEPManager : MonoBehaviour
     // ============================================================
     
     /// <summary>
+    /// 初期化完了後、共通のタイミングでコンテンツカードをプリフェッチ（両 OS とも C# から呼ぶ）
+    /// </summary>
+    private IEnumerator PrefetchContentCardsAfterInit()
+    {
+        if (!AEPNativeBridge.IsNativeAvailable) yield break;
+        yield return new WaitForSeconds(2f);
+        string surfacePath = GetSurfacePath();
+        AEPNativeBridge.PrefetchContentCards(surfacePath, gameObject.name);
+    }
+    
+    /// <summary>
     /// Assuranceセッションを非同期で起動（起動をブロックしない）
     /// </summary>
     private IEnumerator StartAssuranceSessionAsync()
     {
-        // 少し待ってからAssuranceを起動（SDK初期化直後は避ける）
         yield return new WaitForSeconds(0.5f);
-        
         Debug.Log("Starting Assurance session asynchronously...");
-        
-        #if UNITY_IOS && !UNITY_EDITOR
-            _ios_aep_startAssurance();
-        #elif UNITY_ANDROID && !UNITY_EDITOR
-            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                jc.CallStatic("startAssuranceSession");
-        #else
+        if (AEPNativeBridge.IsNativeAvailable)
+            AEPNativeBridge.StartAssurance();
+        else
             Debug.Log("Assurance session would start on device (async)");
-        #endif
     }
     
     /// <summary>
@@ -304,20 +406,13 @@ public class AEPManager : MonoBehaviour
     /// </summary>
     public void StartAssuranceSession()
     {
-        #if UNITY_IOS && !UNITY_EDITOR
-            ExecuteWhenInitialized(() => {
-                Debug.Log("Manually starting Assurance session...");
-                _ios_aep_startAssurance();
-            });
-        #elif UNITY_ANDROID && !UNITY_EDITOR
-            ExecuteWhenInitialized(() => {
-                Debug.Log("Manually starting Assurance session...");
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                    jc.CallStatic("startAssuranceSession");
-            });
-        #else
-            Debug.Log("Assurance only available on iOS/Android device");
-        #endif
+        ExecuteWhenInitialized(() => {
+            Debug.Log("Manually starting Assurance session...");
+            if (AEPNativeBridge.IsNativeAvailable)
+                AEPNativeBridge.StartAssurance();
+            else
+                Debug.Log("Assurance only available on iOS/Android device");
+        });
     }
 
     // ============================================================
@@ -329,7 +424,6 @@ public class AEPManager : MonoBehaviour
     /// </summary>
     public void SendEvent()
     {
-        // パーティクルエフェクトを再生
         if (clickEffect != null)
         {
             clickEffect.Play();
@@ -337,21 +431,10 @@ public class AEPManager : MonoBehaviour
         }
 
         ExecuteWhenInitialized(() => {
-            Dictionary<string, object> data = new Dictionary<string, object>{
-                {"clickedObject", "SendEvent"},
-            };
+            var data = new Dictionary<string, object> { { "clickedObject", "SendEvent" } };
             string jsonData = DictToJson(data);
-
-            #if UNITY_IOS && !UNITY_EDITOR
-                _ios_aep_sendEvent("application.click", jsonData);
-                Debug.Log("Edge.sendEvent called with SendEvent");
-            #elif UNITY_ANDROID && !UNITY_EDITOR
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                    jc.CallStatic("sendEvent", "application.click", jsonData);
-                Debug.Log("Edge.sendEvent called (Android) with SendEvent");
-            #else
-                Debug.Log($"SendEvent: would be called on device with data: {jsonData}");
-            #endif
+            AEPNativeBridge.SendEvent("application.click", jsonData);
+            Debug.Log("Edge.sendEvent called with SendEvent");
         });
     }
 
@@ -361,28 +444,15 @@ public class AEPManager : MonoBehaviour
     public void UpdateIdentities()
     {
         string crmId = GetCrmIdFromInput();
-        
         ExecuteWhenInitialized(() => {
-            Dictionary<string, object> data = new Dictionary<string, object>{
-                {"clickedObject", "UpdateIdentities"},
-                {"crmId", crmId}
+            var data = new Dictionary<string, object> {
+                { "clickedObject", "UpdateIdentities" },
+                { "crmId", crmId }
             };
             string jsonData = DictToJson(data);
-            
-            #if UNITY_IOS && !UNITY_EDITOR
-                _ios_aep_sendEvent("application.click", jsonData);
-                _ios_aep_updateIdentities("extendedPersonalId", crmId);
-                Debug.Log($"Identity.updateIdentities called with CRM ID: {crmId}");
-            #elif UNITY_ANDROID && !UNITY_EDITOR
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                {
-                    jc.CallStatic("sendEvent", "application.click", jsonData);
-                    jc.CallStatic("updateIdentities", "extendedPersonalId", crmId);
-                }
-                Debug.Log($"Identity.updateIdentities called (Android) with CRM ID: {crmId}");
-            #else
-                Debug.Log($"UpdateIdentities: would update CRM ID: {crmId} on device with data: {jsonData}");
-            #endif
+            AEPNativeBridge.SendEvent("application.click", jsonData);
+            AEPNativeBridge.UpdateIdentities("extendedPersonalId", crmId);
+            Debug.Log($"Identity.updateIdentities called with CRM ID: {crmId}");
         });
     }
     
@@ -424,27 +494,14 @@ public class AEPManager : MonoBehaviour
     public void ShowContentCardsText()
     {
         string surfacePath = GetSurfacePath();
-        
-        Dictionary<string, object> data = new Dictionary<string, object>{
-            {"clickedObject", "ShowContentCardsText"},
-            {"surfacePath", surfacePath}
+        var data = new Dictionary<string, object> {
+            { "clickedObject", "ShowContentCardsText" },
+            { "surfacePath", surfacePath }
         };
         string jsonData = DictToJson(data);
-
-        #if UNITY_IOS && !UNITY_EDITOR
-            _ios_aep_sendEvent("application.click", jsonData);
-            _ios_aep_getContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForText");
-            Debug.Log($"ShowContentCardsText: requesting JSON for text area");
-        #elif UNITY_ANDROID && !UNITY_EDITOR
-            using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-            {
-                jc.CallStatic("sendEvent", "application.click", jsonData);
-                jc.CallStatic("getContentCardsForUnity", surfacePath, gameObject.name, "OnContentCardsReceivedForText");
-            }
-            Debug.Log($"ShowContentCardsText: requesting JSON for text area (Android)");
-        #else
-            Debug.Log($"ShowContentCardsText: would request JSON on device");
-        #endif
+        AEPNativeBridge.SendEvent("application.click", jsonData);
+        AEPNativeBridge.GetContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForText");
+        Debug.Log("ShowContentCardsText: requesting JSON for text area");
     }
 
     /// <summary>
@@ -454,25 +511,14 @@ public class AEPManager : MonoBehaviour
     {
         string surfacePath = GetSurfacePath();
         ExecuteWhenInitialized(() => {
-            Dictionary<string, object> data = new Dictionary<string, object>{
-                {"clickedObject", "ShowContentCardsNative"},
-                {"surfacePath", surfacePath}
+            var data = new Dictionary<string, object> {
+                { "clickedObject", "ShowContentCardsNative" },
+                { "surfacePath", surfacePath }
             };
             string jsonData = DictToJson(data);
-            #if UNITY_IOS && !UNITY_EDITOR
-                _ios_aep_sendEvent("application.click", jsonData);
-                _ios_aep_showContentCardsWithTemplates(surfacePath, "large");
-                Debug.Log("ShowContentCardsNative: opening native drawer");
-            #elif UNITY_ANDROID && !UNITY_EDITOR
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                {
-                    jc.CallStatic("sendEvent", "application.click", jsonData);
-                    jc.CallStatic("showContentCardsWithTemplates", surfacePath, "large");
-                }
-                Debug.Log("ShowContentCardsNative: (Android uses Scroll View for cards)");
-            #else
-                Debug.Log("ShowContentCardsNative: would open native drawer on device");
-            #endif
+            AEPNativeBridge.SendEvent("application.click", jsonData);
+            AEPNativeBridge.ShowContentCardsWithTemplates(surfacePath, "large");
+            Debug.Log("ShowContentCardsNative: opening native drawer (Android may use Scroll View)");
         });
     }
     
@@ -483,25 +529,14 @@ public class AEPManager : MonoBehaviour
     {
         string surfacePath = GetSurfacePath();
         ExecuteWhenInitialized(() => {
-            Dictionary<string, object> data = new Dictionary<string, object>{
-                {"clickedObject", "ShowContentCardsScrollView"},
-                {"surfacePath", surfacePath}
+            var data = new Dictionary<string, object> {
+                { "clickedObject", "ShowContentCardsScrollView" },
+                { "surfacePath", surfacePath }
             };
             string jsonData = DictToJson(data);
-            #if UNITY_IOS && !UNITY_EDITOR
-                _ios_aep_sendEvent("application.click", jsonData);
-                _ios_aep_getContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForScrollView");
-                Debug.Log("ShowContentCardsScrollView: updating Scroll View");
-            #elif UNITY_ANDROID && !UNITY_EDITOR
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                {
-                    jc.CallStatic("sendEvent", "application.click", jsonData);
-                    jc.CallStatic("getContentCardsForUnity", surfacePath, gameObject.name, "OnContentCardsReceivedForScrollView");
-                }
-                Debug.Log("ShowContentCardsScrollView: updating Scroll View (Android)");
-            #else
-                Debug.Log("ShowContentCardsScrollView: would update Scroll View on device");
-            #endif
+            AEPNativeBridge.SendEvent("application.click", jsonData);
+            AEPNativeBridge.GetContentCardsForUnity(surfacePath, gameObject.name, "OnContentCardsReceivedForScrollView");
+            Debug.Log("ShowContentCardsScrollView: updating Scroll View");
         });
     }
     
@@ -511,39 +546,26 @@ public class AEPManager : MonoBehaviour
     public void UpdatePropositionsManually()
     {
         string surfacePath = GetSurfacePath();
-        
         ExecuteWhenInitialized(() => {
-            // UIに更新中メッセージを表示
             if (cardsSurface != null)
             {
                 TMP_Text cardText = cardsSurface.GetComponentInChildren<TMP_Text>();
                 if (cardText != null)
-                {
                     cardText.text = "Updating Content Cards...\n\nFetching latest data from server.";
-                }
             }
-            
-            Dictionary<string, object> data = new Dictionary<string, object>{
-                {"clickedObject", "UpdatePropositionsManually"},
-                {"surfacePath", surfacePath}
+
+            var data = new Dictionary<string, object> {
+                { "clickedObject", "UpdatePropositionsManually" },
+                { "surfacePath", surfacePath }
             };
             string jsonData = DictToJson(data);
+            AEPNativeBridge.SendEvent("application.click", jsonData);
+            AEPNativeBridge.UpdatePropositionsManually(surfacePath, gameObject.name);
 
-            #if UNITY_IOS && !UNITY_EDITOR
-                _ios_aep_sendEvent("application.click", jsonData);
-                _ios_aep_updatePropositionsManually(surfacePath);
-                Debug.Log($"Manually updating propositions for: {surfacePath}");
-            #elif UNITY_ANDROID && !UNITY_EDITOR
-                using (var jc = new UnityEngine.AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge"))
-                {
-                    jc.CallStatic("sendEvent", "application.click", jsonData);
-                    jc.CallStatic("updatePropositionsManually", surfacePath);
-                }
-                Debug.Log($"Manually updating propositions for: {surfacePath} (Android)");
-            #else
-                Debug.Log($"UpdatePropositionsManually: would update on device");
+            if (!AEPNativeBridge.IsNativeAvailable)
                 StartCoroutine(SimulatePropositionUpdate(surfacePath));
-            #endif
+
+            Debug.Log($"Manually updating propositions for: {surfacePath}");
         });
     }
     
@@ -580,36 +602,32 @@ public class AEPManager : MonoBehaviour
     public void OnContentCardsReceivedForScrollView(string jsonResponse)
     {
         Debug.Log($"Content Cards JSON (for Scroll View): {jsonResponse?.Length ?? 0} chars");
-        try
+        if (!ContentCardDataParser.TryParse(jsonResponse, out var cards, out var error))
         {
-            ContentCardsResponse response = JsonUtility.FromJson<ContentCardsResponse>(jsonResponse);
-            if (!string.IsNullOrEmpty(response.error))
-            {
-                DisplayErrorMessage($"Error: {response.error}");
-                return;
-            }
-            if (response.cards == null || response.cards.Count == 0)
-            {
-                DisplayErrorMessage("No content cards available");
-                return;
-            }
-            if (contentCardsContainer == null)
-            {
-                DisplayErrorMessage("Content Cards Container not set in AEPManager.");
-                return;
-            }
-            if (contentCardItemPrefab == null)
-            {
-                DisplayErrorMessage("Content Cards prefab not set in AEPManager.");
-                return;
-            }
-            DisplayContentCardsInArea(response.cards);
+            DisplayErrorMessage("Parse Error: Invalid JSON");
+            return;
         }
-        catch (Exception e)
+        if (!string.IsNullOrEmpty(error))
         {
-            Debug.LogError($"Failed to parse content cards: {e.Message}");
-            DisplayErrorMessage($"Parse Error: {e.Message}");
+            DisplayErrorMessage($"Error: {error}");
+            return;
         }
+        if (cards == null || cards.Count == 0)
+        {
+            DisplayErrorMessage("No content cards available");
+            return;
+        }
+        if (contentCardsContainer == null)
+        {
+            DisplayErrorMessage("Content Cards Container not set in AEPManager.");
+            return;
+        }
+        if (contentCardItemPrefab == null)
+        {
+            DisplayErrorMessage("Content Cards prefab not set in AEPManager.");
+            return;
+        }
+        DisplayContentCardsInArea(cards);
     }
     
     /// <summary>

@@ -1,26 +1,27 @@
 # AEP SDK Test
 
-Unity で **iOS** ビルドし、AEP SDK / AJO Content Cards を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。<br>
-[README_technical_review.md](README_technical_review.md) に裏どり情報あり。<br>
-※ 全て AI まとめ
+Unity で **iOS / Android** ビルドし、AEP SDK / AJO Content Cards / In-App Message を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。技術的精査は[技術的精査](#技術的精査)を参照。
 
 ## 目次
 
 1. [プロジェクト概要](#プロジェクト概要)
 2. [セットアップ（AEP App ID）](#セットアップaep-app-id)
-3. [実装状態の詳細](#実装状態の詳細)
-4. [AJO Content Cards の実装](#ajo-content-cards-の実装)
-5. [AJO In-App Message のボタン押下](#ajo-in-app-message-のボタン押下)
+3. [実装状態の詳細（iOS）](#実装状態の詳細-ios)
+4. [実装状態の詳細（Android）](#実装状態の詳細-android)
+5. [AJO Content Cards の実装](#ajo-content-cards-の実装)
+6. [AJO In-App Message](#ajo-in-app-message)
+7. [動作環境・ビルド](#動作環境ビルド)
+8. [技術的精査](#技術的精査)
 
 ---
 
 ## プロジェクト概要
 
-- **プラットフォーム**: Unity → **iOS**（ネイティブブリッジで AEP SDK を呼び出し）
+- **プラットフォーム**: Unity → **iOS** および **Android**（ネイティブブリッジで各 SDK を呼び出し）
 - **機能**
   - AEP SDK 初期化（非同期、コールバックで完了通知）
   - Edge イベント送信、Identity 更新（extendedPersonalId 等）
-  - **Content Cards**: 3 種の表示（Text / Native / Scroll View）
+  - **Content Cards**: 3 種の表示（Text / Native / Scroll View）※ Android の Native はログのみ・Scroll View で表示する運用
   - **In-App Message**: ボタン押下時の挙動（URL スキームまたは MessagingDelegate で Unity 通知）
   - Proposition 手動更新（完了・失敗・タイムアウトを Unity に通知）
   - Assurance 手動起動（デバッグ用、オプションで起動時自動起動）
@@ -42,7 +43,7 @@ iOS ビルドで AEP SDK を初期化するには **Launch の App ID** が必�
 
 ---
 
-## 実装状態の詳細
+## 実装状態の詳細（iOS）
 
 ### ファイル構成と役割
 
@@ -154,6 +155,17 @@ sequenceDiagram
 
 - **ContentCardData** (C#): `templateType`, `title`, `body`, `imageUrl`, `actionUrl`, `buttonText` — ネイティブ JSON の 1 枚分
 - **ContentCardsResponse** (C#): `cards` (List<ContentCardData>), `error` — `getContentCardsForUnity` コールバックのデシリアライズ先
+
+---
+
+## 実装状態の詳細（Android）
+
+- **レイヤー**: Unity (C#) → `AndroidJavaClass("com.adobe.aep.unity.AEPSdkBridge")` → Java (AEPSdkBridge.java) → AEP Android SDK。結果は `UnityPlayer.UnitySendMessage(gameObjectName, methodName, message)` で Unity に渡す。
+- **ファイル**: `Assets/Scripts/AEPManager.cs`（`#if UNITY_ANDROID && !UNITY_EDITOR`）、`Assets/Plugins/Android/com/adobe/aep/unity/AEPSdkBridge.java`、`Assets/AEPSDK/Editor/AEPSDKDependencies.xml`（`<androidPackages>` で AEP を定義）、`mainTemplate.gradle`（EDM が Resolve 時に XML を読んで implementation を挿入）。
+- **初期化**: `AEPManager.Awake` → `LoadAEPAppIdAndInitialize()` で `AEPAppId.txt` を読み取り → `CallStatic("initialize", appId, "AEPManager", "OnSDKInitialized")`。Java 側で `MobileCore.initialize(UnityPlayer.currentActivity.getApplicationContext())` 完了後、Handler 経由で `UnitySendMessage`。**In-App 表示にはカスタム Application（AEPApplication）での Application.onCreate からの初期化を推奨**（[InAppMessage.md](InAppMessage.md) 参照）。
+- **注意**: `UnityPlayer.currentActivity` はフィールド。Content Card 判定は `item.getSchema() == SchemaType.CONTENT_CARD`。Edge.sendEvent の第 2 引数に EdgeCallback が必要な場合は `Edge.sendEvent(event, null)`。Identity は `com.adobe.marketing.mobile.edge.identity.Identity.updateIdentities(map)`。
+- **Content Cards（Android）**: Text / Scroll View は `getContentCardsForUnity` で JSON 取得。Native は未実装（ログのみ、Scroll View で表示する運用）。Proposition 手動更新は `updatePropositionsManually` → `OnPropositionsUpdated` で success/failed/timeout を通知。
+- **ビルド**: Build Settings で Android を選択 → **Assets → External Dependency Manager → Android Resolver → Resolve** → Build / Build And Run。エミュレータでは Target Architectures に x86/x86_64 を入れておく。
 
 ---
 
@@ -338,18 +350,28 @@ sequenceDiagram
 
 ---
 
-## AJO In-App Message のボタン押下
+## AJO In-App Message
 
-画面に表示した AJO の In-App Message で、ボタン押下時の挙動をどう作るかは **[Docs/InAppMessage_Button_Behavior.md](Docs/InAppMessage_Button_Behavior.md)** にまとめてある。
+画面に表示した AJO の In-App Message のボタン押下挙動・Unity/Android の Activity 設定・実装チェックは **[InAppMessage.md](InAppMessage.md)** にまとめてある。
 
-- **方法 A（推奨・コード不要）**: メッセージのボタン／リンクの URL を `adbinapp://dismiss?interaction=...` や `adbinapp://dismiss?link=...` にすると、SDK が閉じる・トラッキング・外部リンク・ディープリンクを処理する。
-- **adbinapp の仕様**: `adbinapp://` は SDK が**内部で**処理するスキーム。アプリの URL スキームに登録するのは誤り。AJO のボタンは `adbinapp://dismiss?interaction=...&link=...` に統一され、**link は SDK が標準ブラウザで開く**のが標準。
-- **アプリ内 WebView**: `MessagingDelegate` で Message の WKWebView のナビゲーションをインターセプトし、`adbinapp://dismiss?link=...` をキャンセルして **link の URL をアプリ内 WebView**で開く実装をしている（`Docs/InAppMessage_Button_Behavior.md` の「方法 B」参照）。
-- **方法 C（JS 連携）**: `handleJavascriptMessage("AEPInAppCallback")` と HTML の `postMessage` で Unity の `AEPManager.OnInAppMessageAction(string)` に渡す。実装は `AEPSdkBridge.swift` の `InAppMessageDelegate` を参照。
+- **方法 A（推奨・コード不要）**: ボタン URL を `adbinapp://dismiss?interaction=...&link=...` にすると、SDK が閉じる・トラッキング・リンクを処理する。
+- **アプリ内 WebView**: MessagingDelegate で WKWebView のナビゲーションをインターセプトし、link をアプリ内 WebView で開く（InAppMessage.md の「方法 B」）。
+- **方法 C（JS 連携）**: handleJavascriptMessage と postMessage で Unity の `AEPManager.OnInAppMessageAction(string)` に渡す。Android では `window.AEPInAppCallback` で分岐。
 
 ---
 
 ## 動作環境・ビルド
 
-- Unity で iOS ビルド → Xcode で開く。Swift/ObjC ブリッジと AEP 系 CocoaPods がリンクされている前提。
-- 初期化用 Launch App ID は Swift 内でハードコード。必要に応じて差し替える。
+- **iOS**: Unity で iOS ビルド → Xcode で開く。Swift/ObjC ブリッジと AEP 系 CocoaPods がリンクされている前提。初期化用 Launch App ID は必要に応じて差し替える。
+- **Android**: Build Settings で Android を選択 → **External Dependency Manager → Android Resolver → Resolve** → Build / Build And Run。In-App 利用時は GameActivity とカスタム Application（AEPApplication）の有効化を推奨（[InAppMessage.md](InAppMessage.md) 参照）。
+
+---
+
+## 技術的精査
+
+実施日: 2025-02-09。Unity 公式・Adobe AEP/AJO 公式ドキュメントおよび Web 検索による裏付け。
+
+- **Unity iOS ブリッジ**: C ABI の `DllImport("__Internal")`、`extern "C"`、ネイティブ→Unity は `UnitySendMessage` のみ — 公式仕様と一致。
+- **AEP SDK**: MobileCore.initialize、Messaging.updatePropositionsForSurfaces / getPropositionsForSurfaces、getContentCardsUI、Surface(path:)、ContentCardSchemaData、Assurance — 公式 API と一致。
+- **AJO 用語**: Surface（配信場所のパス/URI）、Proposition（キャッシュ）、Content Card（ContentCardSchemaData）、テンプレート（Large/Small/ImageOnly）— 公式説明と矛盾なし。
+- **補足**: Proposition の実体は getPropositionsForSurfaces で取得。getContentCardsUI は表示用 UI オブジェクトの取得。Surface は内部で `mobileapp://<bundleId>/path` 形式。updatePropositionsForSurfaces の完了は公式の完了ハンドラで検知。

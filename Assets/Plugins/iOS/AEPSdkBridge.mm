@@ -42,9 +42,21 @@ extern "C" {
     }
     
     // 手動でPropositionを更新（完了通知付き）
-    void _ios_aep_updatePropositionsManually(const char* surfacePath) {
+    void _ios_aep_updatePropositionsManually(const char* surfacePath, const char* gameObjectName) {
         NSString *surfacePathStr = [NSString stringWithUTF8String:surfacePath];
-        [AEPSdkBridge updatePropositionsManually:surfacePathStr];
+        NSString *gameObjectNameStr = [NSString stringWithUTF8String:gameObjectName];
+        [AEPSdkBridge updatePropositionsManuallyWithSurfacePath:surfacePathStr gameObjectName:gameObjectNameStr];
+    }
+    
+    void _ios_aep_prefetchContentCards(const char* surfacePath, const char* gameObjectName) {
+        NSString *surfacePathStr = surfacePath ? [NSString stringWithUTF8String:surfacePath] : @"square";
+        NSString *gameObjectNameStr = gameObjectName ? [NSString stringWithUTF8String:gameObjectName] : @"AEPManager";
+        [AEPSdkBridge prefetchContentCardsWithSurfacePath:surfacePathStr gameObjectName:gameObjectNameStr];
+    }
+    
+    void _ios_aep_setInAppMessageCallbackTarget(const char* name) {
+        NSString *nameStr = name ? [NSString stringWithUTF8String:name] : @"AEPManager";
+        [AEPSdkBridge setInAppMessageCallbackTarget:nameStr];
     }
     
     void _ios_aep_getContentCardsForUnity(const char* surfacePath, const char* gameObjectName, const char* callbackMethodName) {

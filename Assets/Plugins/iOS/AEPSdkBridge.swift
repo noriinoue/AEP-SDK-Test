@@ -27,8 +27,7 @@ private func sendToUnity(objectName: String, method: String, message: String) {
 }
 
 // MARK: - In-App Message: adbinapp://...?link=... のインターセプト → アプリ内 WebView
-// 公式デモと同様に Message の WKWebView に WKNavigationDelegate を設定し、
-// adbinapp かつ link ありをキャンセルして link をアプリ内 WebView で開く。
+// URL 解釈と WebView 表示は AEPSdkBridge.handleInAppNavigation に一本化し、デリゲートは結果に応じて cancel/dismiss/track のみ行う。
 private final class InAppWebViewNavigationDelegate: NSObject, WKNavigationDelegate {
     private weak var message: Message?
     fileprivate static var retainedDelegate: InAppWebViewNavigationDelegate?
@@ -39,27 +38,19 @@ private final class InAppWebViewNavigationDelegate: NSObject, WKNavigationDelega
     }
     
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url,
-              url.scheme?.lowercased() == "adbinapp" else {
+        guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
             return
         }
-        guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        let (opened, interaction) = AEPSdkBridge.handleInAppNavigation(url: url)
+        if opened {
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self] in
+                self?.message?.dismiss(suppressAutoTrack: false)
+                self?.message?.track(interaction, withEdgeEventType: .interact)
+            }
+        } else {
             decisionHandler(.allow)
-            return
-        }
-        let linkValue = comp.queryItems?.first(where: { $0.name == "link" })?.value?.removingPercentEncoding
-            ?? comp.queryItems?.first(where: { $0.name == "target" })?.value?.removingPercentEncoding
-        guard let link = linkValue, !link.isEmpty else {
-            decisionHandler(.allow)
-            return
-        }
-        let interaction = comp.queryItems?.first(where: { $0.name == "interaction" })?.value ?? "webview"
-        decisionHandler(.cancel)
-        DispatchQueue.main.async { [weak self] in
-            _ = AEPSdkBridge.openWebViewWithURLIfNeeded(link)
-            self?.message?.dismiss(suppressAutoTrack: false)
-            self?.message?.track(interaction, withEdgeEventType: .interact)
         }
     }
 }
@@ -89,7 +80,7 @@ private final class InAppWebViewNavigationDelegate: NSObject, WKNavigationDelega
                 payload = ""
             }
             if !payload.isEmpty {
-                sendToUnity(objectName: "AEPManager", method: "OnInAppMessageAction", message: payload)
+                sendToUnity(objectName: AEPSdkBridge.inAppMessageCallbackTarget, method: "OnInAppMessageAction", message: payload)
             }
             message?.track(payload.isEmpty ? "click" : payload, withEdgeEventType: .interact)
         }
@@ -164,18 +155,30 @@ private final class InAppWebViewController: UIViewController {
 
 // MARK: - アプリ内 WebView 表示（MessagingDelegate で adbinapp://dismiss?link=... をインターセプトしたときに使用）
 @objc public class AEPSdkBridge: NSObject {
-    // MARK: - 待機時間・タイムアウト定数（秒）
-    /// SDK初期化後のプリフェッチ開始までの遅延
-    private static let prefetchDelayAfterSDKInit: TimeInterval = 2.0
-    /// 手動Proposition更新のタイムアウト
-    private static let manualPropositionUpdateTimeout: TimeInterval = 15.0
-    /// ローディングdismiss完了後、次の処理までの待機
-    private static let loadingDismissCompletionDelay: TimeInterval = 0.5
-    
     private static var isInitialized = false
     private static var initializationCallbacks: [(Bool) -> Void] = []
     
-    // 非同期でSDKを初期化（appId は Unity C# が StreamingAssets から読み渡す。Assuranceは自動起動しない）
+    /// In-App Message のボタン押下時に Unity に送る先（C# から setInAppMessageCallbackTarget で設定。未設定時 "AEPManager"）
+    static var inAppMessageCallbackTarget: String = "AEPManager"
+    
+    @objc(setInAppMessageCallbackTarget:)
+    public static func setInAppMessageCallbackTarget(_ name: String) {
+        inAppMessageCallbackTarget = normalizeTarget(name)
+    }
+    
+    /// surface 未指定時は "square"（Android の normalizeSurface と同一契約）
+    private static func normalizeSurface(_ s: String?) -> String {
+        let t = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "square" : t
+    }
+    
+    /// コールバック先未指定時は "AEPManager"（Android の normalizeTarget と同一契約）
+    private static func normalizeTarget(_ s: String?) -> String {
+        let t = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "AEPManager" : t
+    }
+    
+    // 非同期でSDKを初期化（appId は Unity C# が StreamingAssets から読み渡す。プリフェッチは C# が初期化完了後に呼ぶ）
     @objc(setupSDKWithAppId:callback:)
     public static func setupSDK(appId: String, callback: @escaping (Bool) -> Void) {
         let appIdTrimmed = (appId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -195,7 +198,6 @@ private final class InAppWebViewController: UIViewController {
             return
         }
         
-        let startTime = Date()
         print("AEP SDK initialization started (async)")
         
         MobileCore.setLogLevel(.debug)
@@ -203,42 +205,27 @@ private final class InAppWebViewController: UIViewController {
         // MobileCore.initialize のコールバックで初期化完了を検知（wait 処理を使わない）
         // https://developer.adobe.com/client-sdks/home/base/mobile-core/api-reference/#initialize
         MobileCore.initialize(appId: appIdTrimmed) {
-            let elapsedTime = Date().timeIntervalSince(startTime)
-            
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
                 isInitialized = true
-                print("AEP SDK initialization completed in \(String(format: "%.2f", elapsedTime))s")
-                print("SDK will continue loading configurations in background")
-                
-                // In-App Message のボタン押下をネイティブで受け取り Unity に通知するため MessagingDelegate を登録
+                print("AEP SDK initialization completed")
                 MobileCore.messagingDelegate = InAppMessageDelegate.shared
-                
                 for cb in initializationCallbacks {
                     cb(true)
                 }
                 initializationCallbacks.removeAll()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + prefetchDelayAfterSDKInit) {
-                    prefetchContentCards()
-                }
             }
         }
     }
     
-    // コンテンツカードを事前取得（起動時にバックグラウンドで実行）
-    private static func prefetchContentCards() {
-        let surface = Surface(path: "square")
-        
-        print("Prefetching content cards for surface: square")
+    /// コンテンツカードをプリフェッチ。C# が初期化完了後に surfacePath / gameObjectName を指定して呼ぶ。
+    @objc(prefetchContentCardsWithSurfacePath:gameObjectName:)
+    public static func prefetchContentCards(surfacePath: String, gameObjectName: String) {
+        let path = normalizeSurface(surfacePath)
+        let target = normalizeTarget(gameObjectName)
+        let surface = Surface(path: path)
         Messaging.updatePropositionsForSurfaces([surface]) { success in
-            if success {
-                print("Content cards prefetched successfully")
-                
-                DispatchQueue.main.async {
-                    sendToUnity(objectName: "AEPManager", method: "OnContentCardsPrefetched", message: "success")
-                }
-            } else {
-                print("Failed to prefetch content cards")
+            DispatchQueue.main.async {
+                sendToUnity(objectName: target, method: "OnContentCardsPrefetched", message: success ? "success" : "failed")
             }
         }
     }
@@ -254,19 +241,15 @@ private final class InAppWebViewController: UIViewController {
         Assurance.startSession()
     }
 
+    /// Edge にイベント送信。C# が組み立てた JSON を XDM にマージして送る（Android と同一契約）。
     @objc public static func sendEvent(_ eventName: String, jsonData: String) {
-        var xdmData: [String: Any] = [:]
-        xdmData["eventType"] = eventName
-        
-        // JSON文字列をパースしてDictionaryに変換
+        var xdmData: [String: Any] = ["eventType": eventName]
         if let data = jsonData.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
             xdmData.merge(json) { (current, _) in current }
         }
-        
         let experienceEvent = ExperienceEvent(xdm: xdmData)
         Edge.sendEvent(experienceEvent: experienceEvent)
-        MobileCore.track(action: "sendEvent click", data: ["testFullscreen": "true"])
     }
     
     @objc public static func updateIdentities(_ identifierType: String, identifier: String) {
@@ -275,220 +258,107 @@ private final class InAppWebViewController: UIViewController {
         Identity.updateIdentities(with: identityMap)
     }
     
-    // 手動でPropositionを更新（Unity C#から呼び出し、完了通知付き）
-    @objc public static func updatePropositionsManually(_ surfacePath: String) {
-        print("Manual proposition update requested for surface: \(surfacePath)")
-        
-        // ローディング表示
-        showLoadingOverlay()
-        
-        let surface = Surface(path: surfacePath)
-        var isCompleted = false
-        
-        // タイムアウト設定（15秒）
-        DispatchQueue.main.asyncAfter(deadline: .now() + manualPropositionUpdateTimeout) {
-            if !isCompleted {
-                print("Manual proposition update timed out")
-                dismissLoadingOverlay()
-                
-                sendToUnity(objectName: "AEPManager", method: "OnPropositionsUpdated", message: "timeout:\(surfacePath)")
-            }
-        }
-        
+    /// 手動で Proposition 更新。完了は gameObjectName の OnPropositionsUpdated へ（Android と同一契約）。
+    @objc(updatePropositionsManuallyWithSurfacePath:gameObjectName:)
+    public static func updatePropositionsManually(_ surfacePath: String, gameObjectName: String) {
+        let path = normalizeSurface(surfacePath)
+        let target = normalizeTarget(gameObjectName)
+        let surface = Surface(path: path)
         Messaging.updatePropositionsForSurfaces([surface]) { success in
             DispatchQueue.main.async {
-                guard !isCompleted else {
-                    print("Manual proposition update completion called after timeout")
-                    return
-                }
-                
-                isCompleted = true
-                
-                // ローディングを閉じる
-                dismissLoadingOverlay()
-                
-                if success {
-                    print("Manual proposition update succeeded")
-                    sendToUnity(objectName: "AEPManager", method: "OnPropositionsUpdated", message: "success:\(surfacePath)")
-                } else {
-                    print("Manual proposition update failed")
-                    sendToUnity(objectName: "AEPManager", method: "OnPropositionsUpdated", message: "failed:\(surfacePath)")
-                }
+                sendToUnity(objectName: target, method: "OnPropositionsUpdated", message: success ? "success:\(path)" : "failed:\(path)")
             }
         }
     }
     
-    private static var loadingHostingController: UIViewController?
-    private static var errorHostingController: UIViewController?
-    
-    // ローディング表示（手動Proposition更新等で使用）
-    private static func showLoadingOverlay() {
-        DispatchQueue.main.async {
-            guard let unityViewController = unityGetViewController() else {
-                print("ERROR: Cannot show loading overlay - Unity VC not found")
-                return
-            }
-            
-            let loadingView = AnyView(
-                ZStack {
-                    Color.black.opacity(0.5)
-                        .edgesIgnoringSafeArea(.all)
-                    
-                    VStack(spacing: 20) {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            .scaleEffect(2.0)
-                        
-                        Text("Loading...")
-                            .foregroundColor(.white)
-                            .font(.headline)
-                    }
-                }
-            )
-            
-            let hostingController = UIHostingController(rootView: loadingView)
-            hostingController.view.backgroundColor = .clear
-            hostingController.modalPresentationStyle = .overFullScreen
-            hostingController.modalTransitionStyle = .crossDissolve
-            
-            loadingHostingController = hostingController
-            unityViewController.present(hostingController, animated: false) {
-                print("Loading overlay displayed")
-            }
-        }
-    }
-    
-    // ローディングを閉じる（必ずメインスレッドで実行）
-    private static func dismissLoadingOverlay(completion: (() -> Void)? = nil) {
-        DispatchQueue.main.async {
-            guard let controller = loadingHostingController else {
-                print("No loading overlay to dismiss")
-                completion?()
-                return
-            }
-            
-            guard controller.presentingViewController != nil else {
-                print("Loading overlay not presented, cleaning up")
-                loadingHostingController = nil
-                completion?()
-                return
-            }
-            
-            print("Dismissing loading overlay")
-            controller.dismiss(animated: false) {
-                loadingHostingController = nil
-                print("Loading overlay dismissed")
-                
-                // 重要: ViewControllerが完全に解放され、UIの状態が安定するまで待機
-                // この待機により、次のpresentが確実に成功する
-                DispatchQueue.main.asyncAfter(deadline: .now() + loadingDismissCompletionDelay) {
-                    print("Loading overlay cleanup completed, executing completion")
-                    completion?()
-                }
-            }
-        }
-    }
-    
-    // エラーメッセージを表示
-    private static func showErrorMessage(_ message: String) {
-        let errorView = AnyView(
-            ZStack {
-                Color.black.opacity(0.5)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 50))
-                        .foregroundColor(.yellow)
-                    
-                    Text(message)
-                        .foregroundColor(.white)
-                        .font(.headline)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                    
-                    Button(action: {
-                        dismissErrorMessage()
-                    }) {
-                        Text("OK")
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 40)
-                            .padding(.vertical, 12)
-                            .background(Color.blue)
-                            .cornerRadius(10)
-                    }
-                }
-                .padding()
-            }
-        )
-        
-        let hostingController = UIHostingController(rootView: errorView)
-        hostingController.view.backgroundColor = .clear
-        hostingController.modalPresentationStyle = .overFullScreen
-        hostingController.modalTransitionStyle = .crossDissolve
-        
-        if let unityViewController = unityGetViewController() {
-            errorHostingController = hostingController
-            unityViewController.present(hostingController, animated: true, completion: nil)
-        }
-    }
-    
-    // エラーメッセージを閉じる
-    private static func dismissErrorMessage() {
-        guard let controller = errorHostingController else {
-            return
-        }
-        
-        guard controller.presentingViewController != nil else {
-            errorHostingController = nil
-            return
-        }
-        
-        controller.dismiss(animated: true) {
-            errorHostingController = nil
-        }
-    }
-    
-    // MARK: - adbinapp://ok → アプリ内 WebView
+    // MARK: - adbinapp → アプリ内 WebView（URL 解釈と表示をここに集約）
     private static var webViewHostingController: UIViewController?
     
-    /// link の URL で WebView を開く（adbinapp://host/path は https に変換）。MessagingDelegate のナビインターセプトから呼ばれる。
-    /// link が adbinapp スキームの場合は https に変換してから表示する。処理した場合 true を返す。
+    /// ナビゲーション URL を解釈し、処理した場合は true と interaction を返す。デリゲートは cancel + dismiss + track を行う。
+    /// - adbinapp://dismiss?interaction=cancel → モーダルを閉じるだけ
+    /// - adbinapp://dismiss?interaction=clicked&link=... → 外部ブラウザで開く
+    /// - adbinapp://dismiss?interaction=webview&link=... → アプリ内 WebView で開く
+    /// - http(s)://... → アプリ内 WebView で開く
+    static func handleInAppNavigation(url: URL) -> (opened: Bool, interaction: String) {
+        let scheme = url.scheme?.lowercased() ?? ""
+        
+        if scheme == "adbinapp" {
+            guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                return (false, "webview")
+            }
+            let interaction = comp.queryItems?.first(where: { $0.name == "interaction" })?.value ?? "webview"
+            
+            // interaction=cancel → モーダルを閉じるだけ
+            if interaction == "cancel" {
+                return (true, "cancel")
+            }
+            
+            let linkValue = comp.queryItems?.first(where: { $0.name == "link" })?.value?.removingPercentEncoding
+                ?? comp.queryItems?.first(where: { $0.name == "target" })?.value?.removingPercentEncoding
+            guard let link = linkValue?.trimmingCharacters(in: .whitespacesAndNewlines), !link.isEmpty,
+                  let linkURL = URL(string: link) else {
+                return (true, interaction)
+            }
+            
+            let loadURL: URL?
+            if linkURL.scheme?.lowercased() == "adbinapp" {
+                var c = URLComponents(url: linkURL, resolvingAgainstBaseURL: false)
+                c?.scheme = "https"
+                loadURL = c?.url
+            } else if linkURL.scheme?.lowercased() == "https" || linkURL.scheme?.lowercased() == "http" {
+                loadURL = linkURL
+            } else {
+                loadURL = nil
+            }
+            
+            // interaction=clicked → 外部ブラウザで開く
+            if interaction == "clicked" {
+                if let urlToOpen = loadURL {
+                    DispatchQueue.main.async {
+                        UIApplication.shared.open(urlToOpen)
+                    }
+                }
+                return (true, "clicked")
+            }
+            
+            // interaction=webview → アプリ内 WebView で開く
+            if interaction == "webview", let urlToLoad = loadURL {
+                DispatchQueue.main.async {
+                    guard let unityVC = unityGetViewController() else { return }
+                    let webVC = InAppWebViewController(url: urlToLoad) {
+                        webViewHostingController = nil
+                    }
+                    webViewHostingController = webVC
+                    unityVC.present(webVC, animated: true)
+                }
+                return (true, "webview")
+            }
+            
+            return (true, interaction)
+        }
+        
+        // 直接 http(s) URL → アプリ内 WebView で開く
+        if scheme == "https" || scheme == "http" {
+            DispatchQueue.main.async {
+                guard let unityVC = unityGetViewController() else { return }
+                let webVC = InAppWebViewController(url: url) {
+                    webViewHostingController = nil
+                }
+                webViewHostingController = webVC
+                unityVC.present(webVC, animated: true)
+            }
+            return (true, "webview")
+        }
+        
+        return (false, "webview")
+    }
+    
+    /// 文字列 URL で WebView を開く（ObjC 互換）。中身は handleInAppNavigation に委譲。
     @objc(openWebViewWithURLIfNeeded:)
     public static func openWebViewWithURLIfNeeded(_ link: String) -> Bool {
         let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        
-        let loadURL: URL?
-        if let url = URL(string: trimmed), url.scheme?.lowercased() == "adbinapp" {
-            var comp = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            comp?.scheme = "https"
-            loadURL = comp?.url
-        } else if let url = URL(string: trimmed), url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "http" {
-            loadURL = url
-        } else {
-            loadURL = nil
-        }
-        
-        guard let urlToLoad = loadURL else {
-            print("AEP WebView: invalid link for WebView: \(trimmed)")
-            return false
-        }
-        
-        DispatchQueue.main.async {
-            guard let unityVC = unityGetViewController() else {
-                print("AEP WebView: Unity view controller not found")
-                return
-            }
-            let webVC = InAppWebViewController(url: urlToLoad) {
-                webViewHostingController = nil
-            }
-            webViewHostingController = webVC
-            unityVC.present(webVC, animated: true) {
-                print("AEP WebView opened: \(urlToLoad.absoluteString)")
-            }
-        }
-        return true
+        guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return false }
+        return handleInAppNavigation(url: url).opened
     }
     
     // MARK: - Content Cards with Template (SwiftUI ScrollView)
@@ -503,17 +373,15 @@ private final class InAppWebViewController: UIViewController {
     ///   - templateStyle: "large" または "small"（未指定時は "large"）
     @objc(showContentCardsSwiftUIWithTemplates:templateStyle:)
     public static func showContentCardsSwiftUIWithTemplates(_ surfacePath: String, templateStyle: String) {
+        let path = normalizeSurface(surfacePath)
+        let style = (templateStyle.isEmpty ? "large" : templateStyle)
         DispatchQueue.main.async {
-            guard let unityViewController = unityGetViewController() else {
-                print("ERROR: Cannot show content cards - Unity VC not found")
-                return
-            }
-            
-            let surface = Surface(path: surfacePath)
+            guard let unityViewController = unityGetViewController() else { return }
+            let surface = Surface(path: path)
             let view = ContentCardsSwiftUIView(
-                surfacePath: surfacePath,
+                surfacePath: path,
                 surface: surface,
-                templateStyle: templateStyle,
+                templateStyle: style,
                 onClose: {
                     dismissContentCardsTemplateView()
                 }
@@ -524,9 +392,7 @@ private final class InAppWebViewController: UIViewController {
             hostingController.modalPresentationStyle = .pageSheet
             
             contentCardsTemplateHostingController = hostingController
-            unityViewController.present(hostingController, animated: true) {
-                print("Content Cards (Template) SwiftUI presented")
-            }
+            unityViewController.present(hostingController, animated: true)
         }
     }
     
@@ -539,107 +405,43 @@ private final class InAppWebViewController: UIViewController {
             }
             controller.dismiss(animated: true) {
                 contentCardsTemplateHostingController = nil
-                print("Content Cards (Template) SwiftUI dismissed")
             }
         }
     }
     
-    // コンテンツカードを取得してコールバックで返す（Objective-Cから呼ばれる）
+    /// コンテンツカードを取得し、AJO 生データを JSON で Unity に送る。フラット化は C# 側で共通処理（Android と同一契約）。
     @objc(getContentCardsForUnity:callback:)
     public static func getContentCardsForUnity(_ surfacePath: String, callback: @escaping (String) -> Void) {
-        let surface = Surface(path: surfacePath)
-        
-        // AJO SDKからプロポジションを取得（キャッシュから）
+        let surface = Surface(path: normalizeSurface(surfacePath))
         Messaging.getPropositionsForSurfaces([surface]) { propositionsDict, error in
             DispatchQueue.main.async {
                 var jsonResult: String
                 
                 if let error = error {
-                    // エラー時
-                    print("Failed to get content cards for Unity: \(error.localizedDescription)")
                     jsonResult = "{\"error\":\"\(error.localizedDescription)\"}"
                 } else if let propositions = propositionsDict?[surface], !propositions.isEmpty {
-                    // AJO SDK標準のContentCardSchemaDataを使ってパース（非推奨APIを使わない）
-                    var cardsArray: [[String: Any]] = []
-                    
+                    var rawCards: [[String: Any]] = []
                     for proposition in propositions {
-                        for item in proposition.items {
-                            // Content Cardかチェック
-                            if item.schema == .contentCard {
-                                // ContentCardSchemaDataを取得
-                                if let contentCardSchemaData = item.contentCardSchemaData {
-                                    
-                                    // contentプロパティをデバッグ出力
-                                    if let contentDict = contentCardSchemaData.content as? [String: Any] {
-                                        // AJOの実データはネスト構造: title.content, body.content, image.url, buttons[0].actionUrl 等
-                                        var cardData: [String: Any] = [:]
-                                        
-                                        if let titleObj = contentDict["title"] as? [String: Any],
-                                           let title = titleObj["content"] as? String, !title.isEmpty {
-                                            cardData["title"] = title
-                                        }
-                                        if let bodyObj = contentDict["body"] as? [String: Any],
-                                           let body = bodyObj["content"] as? String {
-                                            cardData["body"] = body
-                                        }
-                                        if let imageObj = contentDict["image"] as? [String: Any],
-                                           let imageUrl = imageObj["url"] as? String, !imageUrl.isEmpty {
-                                            cardData["imageUrl"] = imageUrl
-                                        }
-                                        // トップレベル actionUrl または buttons[0].actionUrl
-                                        var actionUrl: String?
-                                        if let top = contentDict["actionUrl"] as? String, !top.isEmpty {
-                                            actionUrl = top
-                                        }
-                                        if actionUrl == nil, let buttons = contentDict["buttons"] as? [[String: Any]],
-                                           let first = buttons.first,
-                                           let url = first["actionUrl"] as? String, !url.isEmpty {
-                                            actionUrl = url
-                                        }
-                                        if let url = actionUrl { cardData["actionUrl"] = url }
-                                        
-                                        // ボタンラベル（buttons[0].text.content）
-                                        if let buttons = contentDict["buttons"] as? [[String: Any]],
-                                           let first = buttons.first,
-                                           let textObj = first["text"] as? [String: Any],
-                                           let textContent = textObj["content"] as? String, !textContent.isEmpty {
-                                            cardData["buttonText"] = textContent
-                                        }
-                                        
-                                        if !cardData.isEmpty {
-                                            cardsArray.append(cardData)
-                                        }
-                                        
-                                        // 表示トラッキング（AJO SDK標準方式 - ContentCardSchemaDataを使用）
-                                        contentCardSchemaData.track(withEdgeEventType: .display)
-                                    } else {
-                                        print("Failed to cast content to [String: Any] for item: \(item.itemId)")
-                                    }
-                                }
-                            }
+                        for item in proposition.items where item.schema == .contentCard {
+                            guard let contentCardSchemaData = item.contentCardSchemaData,
+                                  let contentDict = contentCardSchemaData.content as? [String: Any] else { continue }
+                            rawCards.append(["content": contentDict])
+                            contentCardSchemaData.track(withEdgeEventType: .display)
                         }
                     }
-                    
-                    // JSON文字列に変換
-                    if let jsonData = try? JSONSerialization.data(withJSONObject: ["cards": cardsArray], options: []),
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: ["cards": rawCards, "error": NSNull()]),
                        let jsonString = String(data: jsonData, encoding: .utf8) {
                         jsonResult = jsonString
                     } else {
                         jsonResult = "{\"error\":\"Failed to serialize content cards\"}"
-                        print("Failed to serialize content cards to JSON")
                     }
                 } else {
-                    // Propositionが見つからない
-                    print("No content cards available for Unity text display")
-                    jsonResult = "{\"cards\":[]}"
+                    jsonResult = "{\"cards\":[],\"error\":null}"
                 }
-                
-                // コールバックを呼び出してJSONを返す
                 callback(jsonResult)
             }
         }
     }
-
 }
 
 // MARK: - Content Cards SwiftUI (MessagingDemoAppSwiftUI CardsView に準拠)
