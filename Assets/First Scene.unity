@@ -1041,7 +1041,7 @@ MonoBehaviour:
   showContentCardsNativeButton: {fileID: 152459502}
   showContentCardsScrollViewButton: {fileID: 2025383711}
   updatePropositionsButton: {fileID: 1059686496}
-  autoStartAssuranceOnLaunch: 0
+  autoStartAssuranceOnLaunch: 1
 --- !u!4 &191954733
 Transform:
   m_ObjectHideFlags: 0
@@ -4620,7 +4620,7 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 148294071}
   m_HandleRect: {fileID: 148294070}
   m_Direction: 2
-  m_Value: 0
+  m_Value: 1
   m_Size: 1
   m_NumberOfSteps: 0
   m_OnValueChanged:
