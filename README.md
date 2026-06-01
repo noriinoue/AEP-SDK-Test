@@ -8,11 +8,12 @@ Unity で **iOS / Android** ビルドし、AEP SDK / AJO Content Cards / In-App 
 
 - **Unity アプリをビルドして起動するだけ**なら、クローン直後でも可能です（AEP 未初期化のまま動作）。
 - **AEP の初期化 / Content Cards / In-App Message まで確認する**には、Adobe Tags（旧 Launch）の **App ID 設定が必須**です。
+- このプロジェクトの動作確認シーンは `**Assets/First Scene.unity`（First Scene）** です。
 
 ### 1) リポジトリを取得
 
 ```bash
-git clone <このリポジトリURL>
+git clone https://github.com/noriinoue/AEP-SDK-Test
 cd AEP-SDK-Test
 ```
 
@@ -20,11 +21,12 @@ cd AEP-SDK-Test
 
 - 推奨 Unity バージョン: `6000.3.6f1`（`ProjectSettings/ProjectVersion.txt`）
 - Unity Hub でプロジェクトを開く
+- 起動直後に別シーンが開いている場合は、`Assets/First Scene.unity` を開いて動作確認してください
 
 ### 3) AEP App ID（Adobe Tags / Launch）を設定
 
-1. `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピー  
-2. `AEPAppId.txt` の `YOUR_LAUNCH_APP_ID_HERE` を、Adobe Tags の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置換  
+1. `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピー
+2. `AEPAppId.txt` の `YOUR_LAUNCH_APP_ID_HERE` を、Adobe Tags の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置換
 3. `AEPAppId.txt` は `.gitignore` 対象のためコミットしない
 
 > App ID が未設定だと、起動時に AEP 初期化が失敗し、関連機能（Content Cards / In-App Message）を確認できません。
@@ -67,12 +69,12 @@ cd AEP-SDK-Test
 
 iOS ビルドで AEP SDK を初期化するには **Launch の App ID** が必要です。この値はリポジトリに含めず、各環境で設定します。
 
-1. **サンプルをコピー**  
-   `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピーする。
-2. **App ID を記入**  
-   `AEPAppId.txt` を開き、`YOUR_LAUNCH_APP_ID_HERE` を Adobe Launch の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置き換える。
-3. **コミットしない**  
-   `AEPAppId.txt` は `.gitignore` で除外されているため、そのままコミットされません。
+1. **サンプルをコピー**
+  `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピーする。
+2. **App ID を記入**
+  `AEPAppId.txt` を開き、`YOUR_LAUNCH_APP_ID_HERE` を Adobe Launch の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置き換える。
+3. **コミットしない**
+  `AEPAppId.txt` は `.gitignore` で除外されているため、そのままコミットされません。
 
 初回クローン時や CI では、上記のとおり `AEPAppId.txt` を用意してから iOS ビルドしてください。未設定の場合は初期化が失敗し、Unity のコンソールにエラーが表示されます。
 
@@ -82,11 +84,13 @@ iOS ビルドで AEP SDK を初期化するには **Launch の App ID** が必�
 
 ### ファイル構成と役割
 
-| レイヤー | ファイル | 役割 |
-|--------|---------|------|
-| Unity (C#) | `Assets/Scripts/AEPManager.cs` | エントリポイント。SDK 初期化・イベント・Identity・Content Cards の UI とネイティブ呼び出し。シングルトン、初期化完了まで操作をキューイング。 |
-| iOS ブリッジ (ObjC) | `Assets/Plugins/iOS/AEPSdkBridge.mm` | C 関数として Unity の `DllImport` と対応。Swift の `AEPSdkBridge` およびコールバック・`UnitySendMessage` の仲介。 |
-| iOS 実装 (Swift) | `Assets/Plugins/iOS/AEPSdkBridge.swift` | AEP 各拡張の呼び出し、Content Cards の取得・テンプレート表示、Proposition 更新、ローディング/エラー表示、Unity への通知。 |
+
+| レイヤー            | ファイル                                    | 役割                                                                                       |
+| --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Unity (C#)      | `Assets/Scripts/AEPManager.cs`          | エントリポイント。SDK 初期化・イベント・Identity・Content Cards の UI とネイティブ呼び出し。シングルトン、初期化完了まで操作をキューイング。    |
+| iOS ブリッジ (ObjC) | `Assets/Plugins/iOS/AEPSdkBridge.mm`    | C 関数として Unity の `DllImport` と対応。Swift の `AEPSdkBridge` およびコールバック・`UnitySendMessage` の仲介。 |
+| iOS 実装 (Swift)  | `Assets/Plugins/iOS/AEPSdkBridge.swift` | AEP 各拡張の呼び出し、Content Cards の取得・テンプレート表示、Proposition 更新、ローディング/エラー表示、Unity への通知。          |
+
 
 ### レイヤーと呼び出し関係
 
@@ -125,11 +129,13 @@ flowchart LR
     Callbacks --> UI
 ```
 
+
+
 #### 構成の理由
 
 - **C# からネイティブ**: Unity iOS では **C ABI の関数を `DllImport("__Internal")` で呼ぶ**形式のみサポート。Swift/ObjC を直接呼べないため、C の入り口が必要。
 - **.mm を挟む**: `.mm` で `extern "C"` により C リンケージの関数を定義し、その中で Swift の `AEPSdkBridge` を呼ぶ。Swift は `@objc` と `UnityFramework-Swift.h` で ObjC から呼び出し可能。経路は C# → C 関数 → Swift。
-- **ネイティブ → Unity**: 戻りは **`UnitySendMessage(objectName, methodName, message)` のみ**。非同期結果は Swift のコールバック内、または .mm のブロック内で `UnitySendMessage` を呼んで C# に渡す。
+- **ネイティブ → Unity**: 戻りは `**UnitySendMessage(objectName, methodName, message)` のみ**。非同期結果は Swift のコールバック内、または .mm のブロック内で `UnitySendMessage` を呼んで C# に渡す。
 
 → **呼び出しは C 関数のみ・戻りは UnitySendMessage のみ**という iOS ブリッジ仕様のため、C の入り口を持つ .mm と Swift の 2 段構成にしている。
 
@@ -162,6 +168,8 @@ sequenceDiagram
     C->>U: SetContentCardButtonsInteractable(true)
 ```
 
+
+
 1. `AEPManager.Awake` → `InitializeSDKAsync`
 2. iOS: `_ios_aep_initialize` → .mm → `AEPSdkBridge.setupSDK(callback:)`
 3. Swift: `MobileCore.initialize` 完了 → コールバックで `UnitySendMessage` → `OnSDKInitialized("success")`
@@ -170,15 +178,17 @@ sequenceDiagram
 
 ### ネイティブブリッジ一覧（C# ↔ C ↔ Swift）
 
-| メソッド | 用途 |
-|---------|------|
-| C#:`_ios_aep_initialize`<br>C:`_ios_aep_initialize`<br>Swift:`setupSDKWithCallback:` | 非同期初期化、完了時コールバック名で Unity に通知 |
-| C#:`_ios_aep_startAssurance`<br>C:`_ios_aep_startAssurance`<br>Swift:`startAssuranceSession` | Assurance 手動起動 |
-| C#:`_ios_aep_sendEvent`<br>C:`_ios_aep_sendEvent`<br>Swift:`sendEvent:jsonData:` | Edge イベント送信 |
-| C#:`_ios_aep_updateIdentities`<br>C:`_ios_aep_updateIdentities`<br>Swift:`updateIdentities:identifier:` | Identity 更新 |
-| C#:`_ios_aep_getContentCardsForUnity`<br>C:`_ios_aep_getContentCardsForUnity`<br>Swift:`getContentCardsForUnity:callback:` | カード JSON 取得、コールバックで Unity に文字列渡し |
-| C#:`_ios_aep_showContentCardsWithTemplates`<br>C:`_ios_aep_showContentCardsWithTemplates`<br>Swift:`showContentCardsSwiftUIWithTemplates:templateStyle:` | ネイティブドロワーでテンプレート表示 |
-| C#:`_ios_aep_updatePropositionsManually`<br>C:`_ios_aep_updatePropositionsManually`<br>Swift:`updatePropositionsManually:` | Proposition 手動更新、完了は `OnPropositionsUpdated` で通知 |
+
+| メソッド                                                                                                                                               | 用途                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| C#:`_ios_aep_initialize` C:`_ios_aep_initialize` Swift:`setupSDKWithCallback:`                                                                     | 非同期初期化、完了時コールバック名で Unity に通知                     |
+| C#:`_ios_aep_startAssurance` C:`_ios_aep_startAssurance` Swift:`startAssuranceSession`                                                             | Assurance 手動起動                                   |
+| C#:`_ios_aep_sendEvent` C:`_ios_aep_sendEvent` Swift:`sendEvent:jsonData:`                                                                         | Edge イベント送信                                      |
+| C#:`_ios_aep_updateIdentities` C:`_ios_aep_updateIdentities` Swift:`updateIdentities:identifier:`                                                  | Identity 更新                                      |
+| C#:`_ios_aep_getContentCardsForUnity` C:`_ios_aep_getContentCardsForUnity` Swift:`getContentCardsForUnity:callback:`                               | カード JSON 取得、コールバックで Unity に文字列渡し                 |
+| C#:`_ios_aep_showContentCardsWithTemplates` C:`_ios_aep_showContentCardsWithTemplates` Swift:`showContentCardsSwiftUIWithTemplates:templateStyle:` | ネイティブドロワーでテンプレート表示                               |
+| C#:`_ios_aep_updatePropositionsManually` C:`_ios_aep_updatePropositionsManually` Swift:`updatePropositionsManually:`                               | Proposition 手動更新、完了は `OnPropositionsUpdated` で通知 |
+
 
 ### Unity 側の主要状態
 
@@ -189,7 +199,7 @@ sequenceDiagram
 ### データ構造（Unity ↔ ネイティブ）
 
 - **ContentCardData** (C#): `templateType`, `title`, `body`, `imageUrl`, `actionUrl`, `buttonText` — ネイティブ JSON の 1 枚分
-- **ContentCardsResponse** (C#): `cards` (List<ContentCardData>), `error` — `getContentCardsForUnity` コールバックのデシリアライズ先
+- **ContentCardsResponse** (C#): `cards` (List), `error` — `getContentCardsForUnity` コールバックのデシリアライズ先
 
 ---
 
@@ -216,12 +226,14 @@ AJO Content Cards の概要と実装の対応関係をまとめた章。
 
 ### 用語の整理
 
-| 用語 | 説明 |
-|------|------|
-| **Surface** | 配信場所を識別するパス（例: `"square"`）。iOS では内部で `mobileapp://<bundleId>/path` の URI になる。AJO で設定した Surface と一致させる。 |
-| **Proposition** | Surface に紐づく「どのカードを出すか」の情報。SDK がキャッシュし、`getPropositionsForSurfaces` で取得。ネイティブテンプレート表示には `getContentCardsUI` で ContentCardUI を取得する。 |
-| **Content Card** | 1 枚分のカードデータ（スキーマは `ContentCardSchemaData`）。AJO の title/body/image/buttons 等のネスト構造を持つ。 |
-| **テンプレート** | ネイティブ表示用。AJO の施策に応じて Large / Small / ImageOnly などが選ばれ、SDK の `getContentCardsUI(for:customizer:listener:)` でビューが生成される。 |
+
+| 用語               | 説明                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **Surface**      | 配信場所を識別するパス（例: `"square"`）。iOS では内部で `mobileapp://<bundleId>/path` の URI になる。AJO で設定した Surface と一致させる。                             |
+| **Proposition**  | Surface に紐づく「どのカードを出すか」の情報。SDK がキャッシュし、`getPropositionsForSurfaces` で取得。ネイティブテンプレート表示には `getContentCardsUI` で ContentCardUI を取得する。 |
+| **Content Card** | 1 枚分のカードデータ（スキーマは `ContentCardSchemaData`）。AJO の title/body/image/buttons 等のネスト構造を持つ。                                              |
+| **テンプレート**       | ネイティブ表示用。AJO の施策に応じて Large / Small / ImageOnly などが選ばれ、SDK の `getContentCardsUI(for:customizer:listener:)` でビューが生成される。              |
+
 
 ### 実装イメージ（全体）
 
@@ -251,6 +263,8 @@ flowchart LR
     MM <--> CSharp
     CSharp --> UI
 ```
+
+
 
 - **Proposition キャッシュ**: 起動後の prefetch（surface: `"square"`）と手動更新で再取得
 - **取得**: ネイティブで `Messaging.getPropositionsForSurfaces([surface])` または `Messaging.getContentCardsUI(for:surface, ...)`
@@ -295,11 +309,15 @@ flowchart TB
     S2 --> C3[ネイティブ sheet でテンプレート表示]
 ```
 
-| 表示 | 説明 | Unity 側 | ネイティブ側 |
-|------|------|----------|--------------|
-| **Text** | 取得したカードを JSON としてログ風エリアに表示 | `ShowContentCardsText` → `_ios_aep_getContentCardsForUnity(..., "OnContentCardsReceivedForText")`。コールバックで `cardsSurface` の TMP_Text に PrettyPrintJson を表示。 | `getContentCardsForUnity` で Proposition をパースし、`cards` 配列の JSON 文字列をコールバックで返す。 |
-| **Native** | SDK のテンプレート通りにネイティブのドロワーで表示 | `ShowContentCardsNative` → `_ios_aep_showContentCardsWithTemplates(surfacePath, "large")`。表示はすべてネイティブ。 | `showContentCardsSwiftUIWithTemplates` で SwiftUI の sheet を表示。`ContentCardsSwiftUIView` が `getContentCardsUI(for:customizer:listener:)` を呼び、得た `ContentCardUI` の `view` を ScrollView に並べる。Large/Small/ImageOnly は AJO の施策で決まる。 |
-| **Scroll View** | 同一画面の Scroll View に、Unity のプレハブで表示 | `ShowContentCardsScrollView` → `_ios_aep_getContentCardsForUnity(..., "OnContentCardsReceivedForScrollView")`。コールバックで `ContentCardsResponse` をパースし、`DisplayContentCardsInArea(cards)` で `contentCardsContainer` にプレハブを並べる。 | Text と同じく `getContentCardsForUnity` で JSON を返す。 |
+
+
+
+| 表示              | 説明                                 | Unity 側                                                                                                                                                                                                                    | ネイティブ側                                                                                                                                                                                                                        |
+| --------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Text**        | 取得したカードを JSON としてログ風エリアに表示         | `ShowContentCardsText` → `_ios_aep_getContentCardsForUnity(..., "OnContentCardsReceivedForText")`。コールバックで `cardsSurface` の TMP_Text に PrettyPrintJson を表示。                                                                 | `getContentCardsForUnity` で Proposition をパースし、`cards` 配列の JSON 文字列をコールバックで返す。                                                                                                                                                 |
+| **Native**      | SDK のテンプレート通りにネイティブのドロワーで表示        | `ShowContentCardsNative` → `_ios_aep_showContentCardsWithTemplates(surfacePath, "large")`。表示はすべてネイティブ。                                                                                                                     | `showContentCardsSwiftUIWithTemplates` で SwiftUI の sheet を表示。`ContentCardsSwiftUIView` が `getContentCardsUI(for:customizer:listener:)` を呼び、得た `ContentCardUI` の `view` を ScrollView に並べる。Large/Small/ImageOnly は AJO の施策で決まる。 |
+| **Scroll View** | 同一画面の Scroll View に、Unity のプレハブで表示 | `ShowContentCardsScrollView` → `_ios_aep_getContentCardsForUnity(..., "OnContentCardsReceivedForScrollView")`。コールバックで `ContentCardsResponse` をパースし、`DisplayContentCardsInArea(cards)` で `contentCardsContainer` にプレハブを並べる。 | Text と同じく `getContentCardsForUnity` で JSON を返す。                                                                                                                                                                               |
+
 
 ### データフロー（Scroll View の例）
 
@@ -324,6 +342,8 @@ sequenceDiagram
     C->>C: DisplayContentCardsInArea(cards)
     C->>U: プレハブを Content に追加（タイトル・本文・画像・CTA・閉じる）
 ```
+
+
 
 1. ユーザーが「Scroll View」ボタンを押す
 2. C#: `GetSurfacePath()` → `_ios_aep_getContentCardsForUnity(surfacePath, "AEPManager", "OnContentCardsReceivedForScrollView")`
@@ -379,6 +399,8 @@ sequenceDiagram
     C->>U: UI 更新
 ```
 
+
+
 - **Unity**: 「Update Propositions」→ `UpdatePropositionsManually` → `_ios_aep_updatePropositionsManually(surfacePath)`
 - **Swift**: `showLoadingOverlay` → `Messaging.updatePropositionsForSurfaces([surface])`。15 秒タイムアウト or 完了で `dismissLoadingOverlay`、`OnPropositionsUpdated("success|failed|timeout:" + surfacePath)` で通知
 - **Unity**: `OnPropositionsUpdated` — success 時はボタン有効化・メッセージ表示、failed/timeout 時は `DisplayErrorMessage`
@@ -410,3 +432,4 @@ sequenceDiagram
 - **AEP SDK**: MobileCore.initialize、Messaging.updatePropositionsForSurfaces / getPropositionsForSurfaces、getContentCardsUI、Surface(path:)、ContentCardSchemaData、Assurance — 公式 API と一致。
 - **AJO 用語**: Surface（配信場所のパス/URI）、Proposition（キャッシュ）、Content Card（ContentCardSchemaData）、テンプレート（Large/Small/ImageOnly）— 公式説明と矛盾なし。
 - **補足**: Proposition の実体は getPropositionsForSurfaces で取得。getContentCardsUI は表示用 UI オブジェクトの取得。Surface は内部で `mobileapp://<bundleId>/path` 形式。updatePropositionsForSurfaces の完了は公式の完了ハンドラで検知。
+
