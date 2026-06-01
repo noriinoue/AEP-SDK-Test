@@ -2,16 +2,51 @@
 
 Unity で **iOS / Android** ビルドし、AEP SDK / AJO Content Cards / In-App Message を扱うサンプル。ネイティブブリッジ経由で AEP を呼び出す。技術的精査は[技術的精査](#技術的精査)を参照。
 
+## まず動かす（クローン直後の最短手順）
+
+### 結論
+
+- **Unity アプリをビルドして起動するだけ**なら、クローン直後でも可能です（AEP 未初期化のまま動作）。
+- **AEP の初期化 / Content Cards / In-App Message まで確認する**には、Adobe Tags（旧 Launch）の **App ID 設定が必須**です。
+
+### 1) リポジトリを取得
+
+```bash
+git clone <このリポジトリURL>
+cd AEP-SDK-Test
+```
+
+### 2) Unity で開く
+
+- 推奨 Unity バージョン: `6000.3.6f1`（`ProjectSettings/ProjectVersion.txt`）
+- Unity Hub でプロジェクトを開く
+
+### 3) AEP App ID（Adobe Tags / Launch）を設定
+
+1. `Assets/StreamingAssets/AEPAppId.txt.sample` を `AEPAppId.txt` にコピー  
+2. `AEPAppId.txt` の `YOUR_LAUNCH_APP_ID_HERE` を、Adobe Tags の App ID（例: `xxxx/xxxx/launch-xxxx-development`）に置換  
+3. `AEPAppId.txt` は `.gitignore` 対象のためコミットしない
+
+> App ID が未設定だと、起動時に AEP 初期化が失敗し、関連機能（Content Cards / In-App Message）を確認できません。
+
+### 4) ビルド
+
+- **iOS**: Unity で iOS Build → Xcode で実機起動
+- **Android**: Unity で Android に切替 → `External Dependency Manager > Android Resolver > Resolve` → Build / Build And Run
+
+---
+
 ## 目次
 
-1. [プロジェクト概要](#プロジェクト概要)
-2. [セットアップ（AEP App ID）](#セットアップaep-app-id)
-3. [実装状態の詳細（iOS）](#実装状態の詳細-ios)
-4. [実装状態の詳細（Android）](#実装状態の詳細-android)
-5. [AJO Content Cards の実装](#ajo-content-cards-の実装)
-6. [AJO In-App Message](#ajo-in-app-message)
-7. [動作環境・ビルド](#動作環境ビルド)
-8. [技術的精査](#技術的精査)
+1. [まず動かす（クローン直後の最短手順）](#まず動かすクローン直後の最短手順)
+2. [プロジェクト概要](#プロジェクト概要)
+3. [セットアップ（AEP App ID）](#セットアップaep-app-id)
+4. [実装状態の詳細（iOS）](#実装状態の詳細-ios)
+5. [実装状態の詳細（Android）](#実装状態の詳細-android)
+6. [AJO Content Cards の実装](#ajo-content-cards-の実装)
+7. [AJO In-App Message](#ajo-in-app-message)
+8. [動作環境・ビルド](#動作環境ビルド)
+9. [技術的精査](#技術的精査)
 
 ---
 
